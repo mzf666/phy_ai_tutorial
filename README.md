@@ -115,6 +115,7 @@
   data.py          # 数据组织与预处理
   train.py         # 训练 loop 与 objective
   infer.py         # 推理链路
+  eval.py          # 评测流程: 环境接口, episode 循环, 打分, 聚合 (数据集本身不下载)
   test_parity.py   # 参数量与 shape 对齐检查
   figs/            # I/O 图, 由脚本生成
 ```
@@ -134,7 +135,7 @@
 2. **复现范围**: 哪些部分 **有代码** (复现), 哪些部分 **只有事实** (背景, 例如 VLM backbone 的预训练 recipe). 背景部分只做事实陈述加引用, 不写代码.
 3. **推理**: 模型结构, 推理链路, 各环节延时.
 4. **训练**: 数据组织形式, **数据预处理** (逐步写清: 归一化, 增广, 多相机处理, action padding, chunk 切分, 混合权重), training objective, curriculum.
-5. **评测**: benchmark, 指标, 与论文对齐到什么程度.
+5. **评测**: 不复现论文数字, 但必须写出: (a) 评测数据集 / benchmark 的接口 (环境的观测键, 动作维度, 初始状态, episode 上限); (b) 具体的 task 列表; (c) eval metric 的精确定义 (二值成功率, 或 rubric 部分得分, 如何聚合); (d) 对应的 eval 代码流程 (episode 循环, 重规划节奏, 打分, 聚合), 落在 `eval.py` 里, 用 tiny 配置和一个假环境跑通; (e) 与论文对齐到什么程度.
 6. **cost 信息表**: 见原则 7.
 7. **reference 映射表**: 见原则 1.
 8. **gap ledger**: 见原则 5.
