@@ -64,6 +64,8 @@
 | 步 | 做什么 | 精确规则 | 来源 |
 |---|---|---|---|
 | (a) 相机槽位 | 把机器人相机映射到 `base_0_rgb / left_wrist_0_rgb / right_wrist_0_rgb`; 缺的槽位放全零图, `image_mask=False` | ALOHA: `cam_high→base`, 两个腕部相机→两个 wrist 槽位 | `openpi@215abfb src/openpi/policies/aloha_policy.py` L50-L70; 论文 Sec. V-A "we also mask out the missing image slots" |
+
+`image_masks` 是什么: 每个槽位一个布尔值 bool[B], 表示这张图是真的还是填充. 模型输入位置固定为三个槽位, 但混合里的机器人有一到三台相机, 缺的槽位放全零图并置 False. 模型内 (`openpi@215abfb src/openpi/models/pi0.py`) 这个布尔值被复制到该图的 256 个 SigLIP token 上进入 `input_mask` (`embed_prefix`, L119), 然后一是作为 `make_attn_mask` 的 `valid_mask` (L43) 让任何 token 都不能 attend 到填充图的 token, 二是通过 `positions = cumsum(input_mask) − 1` (L208) 让填充 token 不占位置编号, 文本和动作 token 的位置与真的只有两张图时一致. 填充图仍会过一遍 SigLIP, mask 只屏蔽结果, 不省算力; 填充是为了 batch 内 shape 固定. 注意 mask 约定属于 checkpoint: openpi 的 LIBERO adapter 对缺失的右腕相机, π0 置 False, π0-FAST 置 True (`libero_policy.py` L68), 因为两者训练时约定不同; 推理时改动它会偏移输入分布.
 | (b) delta action | 关节维: a_{t'} − q_t (整段 chunk 都减当前状态, 不是减前一个动作); 夹爪维保持绝对值 | mask 由 `make_bool_mask` 生成, ALOHA 为 (6, −1, 6, −1); DROID 为 (7, −1) | `transforms.py` L204-L223, L433-L450; `training/config.py` L264, L405 |
 | (c) 归一化 | state 与 actions 逐维 z-score: (x − mean)/(std + 1e-6). 统计量按数据集算, 随 checkpoint 一起发布为 `norm_stats.json` | π0 用 z-score; π0.5 与 π0-FAST 才用 1%/99% 分位数 | `transforms.py` L137-L139; `training/config.py` L187 |
 | (d) 图像缩放 | 长边缩到 224, 双线性, 短边两侧对称填黑 (uint8 填 0, float 填 −1). 不裁剪, 不拉伸 | 640×480 → 内容 224×168, 上下各 28 行黑边 | `shared/image_tools.py` L13-L54 |

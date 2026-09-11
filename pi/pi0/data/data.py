@@ -375,6 +375,20 @@ def build_batch(
 
     # (a) robot adapter: missing camera slots -> black image + mask False.
     #     openpi@215abfb src/openpi/policies/aloha_policy.py L50-L70.
+    #
+    #     What image_masks is for. The model has three fixed camera slots, but robots in the mixture have
+    #     one to three cameras (paper Sec. V-A: "for robots with fewer than three images, we also mask out
+    #     the missing image slots"). A missing slot gets an all-zero image and mask False. Inside the model
+    #     (openpi@215abfb src/openpi/models/pi0.py) the per-slot bool is repeated over that image's 256
+    #     SigLIP tokens into `input_mask` (embed_prefix, L119), which then (1) enters make_attn_mask as
+    #     `valid_mask` (L43) so no token can attend to the padded image tokens, and (2) drives
+    #     `positions = cumsum(input_mask) - 1` (L208) so padded tokens consume no position ids and the
+    #     text/action tokens sit exactly where they would with two real images. The padded image still
+    #     runs through SigLIP: the mask hides its tokens, it does not save compute; padding keeps shapes
+    #     static across the batch.
+    #     Caveat: the mask convention belongs to the checkpoint. openpi's LIBERO adapter sets the missing
+    #     right-wrist mask False for pi0 but True for pi0-FAST (libero_policy.py L68), because that is how
+    #     each model was trained. Changing it at inference shifts the input distribution.
     base = np.asarray(raw["images"]["base_0_rgb"])
     images = {k: np.asarray(raw["images"][k]) if k in raw["images"] else np.zeros_like(base) for k in IMAGE_KEYS}
     image_masks = {k: np.full((b,), k in raw["images"], dtype=bool) for k in IMAGE_KEYS}
