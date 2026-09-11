@@ -77,6 +77,25 @@ W1 ∈ R^{w×d} 是 `action_in_proj`, φ 是 `posemb_sincos`, W2 ∈ R^{w×2w} �
 
 `posemb_sincos` (`pi0.py` L47-L63): `period_i = min_period · (max_period / min_period)^{i / (w/2 − 1)}`, 输出 `[sin(2π τ / period), cos(2π τ / period)]` 拼接, 长 w. 周期从 0.004 到 4.0 对数均匀, 让 τ ∈ [0, 1] 内既有快变分量也有慢变分量.
 
+### 1.4 与 `../vlm` 的关系: 并排的两条通道, 不是上下叠的两层
+
+分三个层面说.
+
+**权重层面 (论文 Appendix B "Action expert" 原话的直译)**: π0 的语言模型不是 "Gemma 2B 加一个外挂", 而是一个 18 层的 transformer, 每一层里放了两套互相独立的权重. expert 0 是 Gemma 2B (宽 2048, MLP 16384), 从 PaliGemma checkpoint 加载; expert 1 是 Gemma 300M (宽 1024, MLP 4096), 从零初始化. 每个 token 只走其中一套: 图像和指令 token 走 expert 0, state 和 action token 走 expert 1. RMSNorm, q / k / v 投影, 输出投影, GeGLU 全是各自的. 两套权重唯一碰头的地方是 attention 的 softmax: expert 0 投出的 816 个 k / v 和 expert 1 投出的 51 个 k / v 拼在同一个序列里, expert 1 的 query 去看 expert 0 的 key (第 4.2 节). 所以 vlm 不是 "底座在下, expert 在上" 的堆叠, 而是并排走过同一个深度、只在 attention 里互看. 这也是为什么 head 数和 head_dim 必须一样而宽度可以不一样.
+
+**代码层面 (本仓库的组织方式, 上游没有这个区分)**: `../vlm/model.py` 的 `Gemma` 是单 expert 的教学版, 目的是先把 RMSNorm, MQA, RoPE, GeGLU, mask, KV cache 这些零件讲清楚. 本 module 的 `MoEGemma` 把每层换成 `MoEBlock`, 里面 `experts[0]` 和 `experts[1]` 各是一个 `GemmaBlock` (借它的四个子模块当容器, 不用它的 forward). `test_parity.py` 有一条断言: 把 `Gemma` 的权重拷进 `MoEGemma.experts[0]`, 只喂 expert 0 的 token, 输出逐元素相等. 也就是说 `vlm.Gemma` 是 `MoEGemma` 在 "expert 1 缺席" 时的特例. 到 `../infer` 组装完整 π0 时, 真正被用的 transformer 是 `MoEGemma`; `../vlm` 留下的是 `SigLIP` (图像编码器), `Embedder` (词表) 和 `embed_prefix` (拼 prefix), `vlm.Gemma` 本身不出现在最终模型里, 它的权重由 `MoEGemma.experts[0]` 承接. 这与 openpi 的结构一致: `pi0.py` L73-L80 只建一个 `_gemma.Module(configs=[paligemma_config, action_expert_config])`, 没有单独的 Gemma 2B 对象.
+
+**系统层面 (一次推理里各自跑几次, `pi0.py` L216-L279, 论文 Appendix D)**:
+
+1. `SigLIP` 编码三张图, `embed_prefix` 拼出 816 个 token.
+2. `MoEGemma` 以 `xs = [prefix, None]` 跑一遍: 只有 expert 0 在场, 存下 18 层的 k / v. 这一步就是 `../vlm` 的全部工作, 每个 chunk 只做一次; 论文 Table I 里是 14 + 32 = 46 ms.
+3. 10 步去噪, 每步 `embed_suffix` 出 51 个 token, `MoEGemma` 以 `xs = [None, suffix]` 跑: 只有 expert 1 在场, query 51 个, key 是 cache 的 816 个加本步的 51 个. 这是本 module 的工作; 10 步合计 27 ms.
+4. 最后 50 个 token 过 `action_out_proj` 得到速度场, Euler 更新 (→ `../flow_matching`).
+
+训练时没有 cache, `xs = [prefix, suffix]` 一次前向 867 个 token, 两个 expert 同时在场, 梯度同时流回两套权重 (openpi 默认不冻结 Gemma 2B, → `../train`).
+
+一句话: `../vlm` 提供 "看和读" 的那套权重和它产生的 k / v, 本 module 提供 "动" 的那套权重; 两者是同一个 transformer 里并排的两条通道, 只通过 attention 单向地让 action 看观测.
+
 ## 2. 复现范围
 
 | 有代码 | 只有事实 (背景) |

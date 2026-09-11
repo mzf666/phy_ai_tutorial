@@ -13,6 +13,18 @@ tokens to the velocity field. Timestep sampling, the loss and the Euler loop liv
 
 Building blocks (RMSNorm, ExpertAttnProj, attend, apply_rope, GeGLU, GemmaBlock, make_attn_mask) are imported from
 ../vlm/model.py; the single-expert GemmaBlock there is reused as "one expert's slot" of a two-expert block.
+
+How this relates to ../vlm (README Sec. 1.4). pi0's language model is ONE 18-layer transformer whose every layer holds
+two independent sets of weights: expert 0 = Gemma 2B (from the PaliGemma checkpoint, the ../vlm weights) and
+expert 1 = Gemma 300M (from scratch, added here). Image and prompt tokens go through expert 0, state and action tokens
+through expert 1; norms, projections and MLPs are never shared. The two meet only inside attention, where expert 1's
+queries can read expert 0's keys / values. So the VLM is not a "base" that the expert sits on top of: the two run side
+by side through the same depth. In code, ../vlm's single-expert `Gemma` is the special case of `MoEGemma` with expert 1
+absent (test_parity asserts this bit-for-bit); the final model in ../infer uses `MoEGemma`, and keeps from ../vlm only
+SigLIP, the vocabulary Embedder and embed_prefix. This mirrors openpi, which builds a single
+`_gemma.Module(configs=[paligemma_config, action_expert_config])` (pi0.py L73-L80) and no standalone Gemma 2B.
+At inference expert 0 runs once per action chunk (xs=[prefix, None] -> kv cache) and expert 1 runs 10 times
+(xs=[None, suffix]); in training both run together in one pass (xs=[prefix, suffix]).
 Attribute names follow the openpi parameter tree; expert i > 0 gets the "_i" suffix in openpi (gemma.py L443-L451),
 here it is experts[i].
 """
@@ -92,6 +104,9 @@ class MoEBlock(nn.Module):
 class MoEGemma(nn.Module):
     """Decoder stack with one set of weights per expert. gemma.py L340-L411.
     forward(xs, positions, mask, kv_cache=None) -> (list of final-normed hidden states or None, kv_cache list over layers).
+    This is THE pi0 transformer: experts[0] of every layer carries the Gemma 2B weights that ../vlm's `Gemma` introduced,
+    experts[1] the 300M action expert. `xs[i] = None` means expert i has no tokens this call (inference: prefix pass is
+    [prefix, None], each denoising step is [None, suffix]); training passes [prefix, suffix] together.
     The VLM's vocabulary embedding belongs to expert 0 (gemma.py L355-L359); ../vlm's PaliGemma already owns one, so
     `with_embedder` is off by default here and ../infer decides where it lives."""
 
@@ -195,8 +210,9 @@ def main():
     B = 2
     vlm_cfg, exp_cfg = tiny_experts()
     # PaliGemma here only supplies the image encoder and the prompt embedding table (its own single-expert Gemma
-    # layers are unused); the transformer that both experts run through is the MoEGemma below. ../infer assembles
-    # the final object; this main keeps the two pieces visible.
+    # layers are unused); the transformer that both experts run through is the MoEGemma below, whose experts[0]
+    # is where the Gemma 2B weights live in the real model. ../infer assembles the final object; this main keeps
+    # the two pieces visible. See README Sec. 1.4 for the vlm / action_expert relationship.
     pg = PaliGemma(tiny_vit(), vlm_cfg).eval()
     llm = MoEGemma((vlm_cfg, exp_cfg)).eval()
     expert = ActionExpert(exp_cfg).eval()
