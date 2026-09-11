@@ -20,7 +20,7 @@
 |---|---|---|
 | [`pi0/data`](pi0/data/README.md) | 数据组织与预处理: 相机槽位, delta action, 归一化, 缩放填黑, 分词, 维度填充, 增广 | 完成 |
 | [`pi0/vlm`](pi0/vlm/README.md) | SigLIP So400m/14 + Gemma 2B 的最小实现 (PaliGemma 结构), checkpoint 视为给定 | 完成 |
-| `pi0/action_expert` | Gemma 300M expert, 与 VLM 共享 attention 的双 expert 机制, state / action / timestep 嵌入, blockwise attention mask | 待做 |
+| [`pi0/action_expert`](pi0/action_expert/README.md) | Gemma 300M expert, 与 VLM 共享 attention 的双 expert 机制, state / action / timestep 嵌入, blockwise attention mask | 完成 |
 | `pi0/flow_matching` | Beta 时间步采样, 线性插值与目标速度, MSE loss, 10 步 Euler 采样与前缀 KV cache | 待做 |
 | `pi0/infer` | 端到端推理链路, 参数量表, 各环节延时表 | 待做 |
 | `pi0/train` | 优化器与 schedule, 冻结 / LoRA, 预训练 → post-training 两阶段, cost 表 | 待做 |
