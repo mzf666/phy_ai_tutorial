@@ -52,8 +52,9 @@ raw ─ build_batch (../data, train=False) ─→ Observation
 |---|---|
 | `Pi0` 的组装与 `sample_actions` | checkpoint 下载与 JAX → PyTorch 权重映射 (gap ledger) |
 | `Pi0Policy.infer` 的全链路 | 各机器人平台的 adapter (相机改名, 夹爪换算, `libero_policy.py`, `aloha_policy.py`) |
+| 评测循环 (`eval.py`: 环境接口, 重规划, 打分, 聚合), LIBERO 观测转换 | LIBERO 仿真器与任务文件本身; 论文的真机评测数字 |
 | paper 配置的参数量表 (meta 设备) | 部署形态 (websocket server / client, 离板推理) |
-| tiny 配置的逐环节计时 | 论文的真机评测 (第 5 节) |
+| tiny 配置的逐环节计时 | |
 
 ## 3. 推理侧
 
@@ -108,29 +109,106 @@ raw ─ build_batch (../data, train=False) ─→ Observation
 
 ## 5. 评测
 
-### 5.1 本仓库的检查
+不复现论文数字, 但评测的接口、任务、指标和代码流程在 `eval.py` 里写全, 用 `ToyEnv` 假环境跑通. π0 论文的评测全部在真机上做 (Sec. V), 没有公开 benchmark 分数; openpi 唯一公开的评测代码是 LIBERO 仿真 (`examples/libero/main.py`), 下面两套都写.
 
-`test_parity.py` (CPU, 约 5 秒):
+### 5.1 评测数据集 / 环境接口
+
+**LIBERO** (仿真, openpi 微调配置 `pi0_libero`, `config.py` L653-L676; 评测脚本 `examples/libero/main.py`):
+
+| 项目 | 内容 | 上游 |
+|---|---|---|
+| 任务套件 | `libero_spatial` 10 任务, `libero_object` 10, `libero_goal` 10, `libero_10` 10, `libero_90` 90 | `main.py` L34-L35 |
+| 每任务 episode 数 | 50, 每个 episode 用套件自带的一个固定初始状态 (`get_task_init_states`) | L38, L82, L97 |
+| episode 上限 | spatial 220, object 280, goal 300, libero_10 520, libero_90 400 步 (按最长示教定) | L60-L71 |
+| 观测键 | `agentview_image`, `robot0_eye_in_hand_image` (256 × 256 渲染, 都旋转 180° 以匹配训练数据), `robot0_eef_pos` [3], `robot0_eef_quat` [4] → 轴角 [3], `robot0_gripper_qpos` [2] | L18, L113-L139 |
+| 送入策略 | 两张图 → `base_0_rgb`, `left_wrist_0_rgb` (右腕槽位填零并 mask), state 8 维, prompt = 任务的自然语言描述 | `libero_policy.py` L30-L84 |
+| 动作 | 7 维: 6 个末端 delta + 1 夹爪; 策略输出 50 步取前 7 维 | `libero_policy.py` L94-L100 |
+| 重规划 | 每次推理执行前 5 步再重新观测 (`replan_steps=5`), 与真机的 25 / 16 不同 | L29, L127-L148 |
+| 起始等待 | 前 10 步发空动作 `[0]*6 + [-1]` 等物体落稳 | L17, L37, L106-L111 |
+| 成功判定 | 环境 `done`: BDDL 目标谓词满足 | L153-L157 |
+
+`eval.py` 里的 `Env` protocol 就是这张表的最小抽象: `reset(task_id, episode_idx) → (raw, prompt)`, `step(action) → (raw, done, info)`; `libero_obs_to_raw` 把 LIBERO 的观测字典转成 `../data` 的 `raw` (含 180° 旋转与四元数 → 轴角). LIBERO 本身 (仿真器, BDDL 文件, 初始状态) 不 vendor.
+
+**真机 (论文)**: 观测 = 机器人相机 + 本体状态 + 指令, 与 `../data` 的 `raw` 相同; 环境是真实世界, 没有 `done`, 由人按 rubric 打分.
+
+### 5.2 任务与指标
+
+**指标定义**:
+
+| 指标 | 定义 | 聚合 | 来源 |
+|---|---|---|---|
+| 二值成功率 (LIBERO) | episode 内 `done` 为 True 记 1, 否则 0 | 每任务 50 个 episode 取均值; 套件内各任务取均值; 表格报套件均值与四套件平均 | `main.py` L182-L185; `examples/libero/README.md` 结果表 |
+| 归一化得分 (论文真机) | 完全成功 1.0; 部分成功按 rubric 给分 = 得到的分 / 满分 | 每任务每方法 10 个 episode 取均值 | π0 Sec. V-A, Appendix E |
+
+**论文的任务与 rubric** (Appendix E; `eval.py` 的 `rubric_score(points, max_points)`):
+
+| 实验 | 任务 | 满分与计分 |
+|---|---|---|
+| A. 预训练直接评测 | 叠衬衫 | 成功 / 失败 (袖子折入 + 对折一次); 4 小 + 1 中号, 各 2 次, 上限 15000 步 ≈ 5 分钟 |
+| | bussing easy / hard | 7 / 12 件物品, 每件放对 1 分 |
+| | 装杂货 | 7 件, 每件入袋 1 分 |
+| | 取吐司 | 4 分: 每片吐司取出 1 分、放盘 1 分 |
+| B. 语言跟随 | bussing, 摆桌, 装杂货 | 按正确重定位每个物体、是否服从指令计分; 每 episode 12 / 7 / 7 件物品, 约 30 / 20 / 14 条指令 |
+| C. 微调新任务 | 叠碗 | 3 分: 两次叠放各 1 分 + 整洁 1 分 |
+| | 叠毛巾 | 3 分: 两次对折各 1 分 + 整洁 1 分 |
+| | 微波炉放保鲜盒 | 4 分: 开门, 拿盒, 放入, 关门 |
+| | 换纸巾 | 4 分: 抓旧卷, 取下, 抓新卷, 放上 |
+| | 抽屉放物 | 5 分: 开抽屉, 3 件物品各 1 分, 关抽屉 |
+| D. 多阶段长任务 | 叠衣 (固定 / 移动) | 每件 4 分: 取出, 铺平, 折叠, 放角落或叠上; 5 件衣物各 2 次, 上限 15000 步 |
+| | 桌面 bussing | 12 分, 同 hard |
+| | 装箱 | 5 分: 拿起, 对折, 右盖, 左盖, 摆正 |
+| | 装蛋 | 7 分: 6 个蛋各 1 分 + 关盖 |
+| | 装食物 | 5 分: 拿起餐盘, 3 样食物各 1 分, 关盒 |
+| | 卸烘干机 | 5 分: 接近, 放篮, 开门, 装衣, 关门 |
+
+**LIBERO 的任务**: 每个套件 10 个 (libero_90 为 90 个) 自然语言任务, 例如 spatial 套件是同一套物体在不同空间关系下的摆放; 任务描述由套件对象的 `task.language` 给出 (`main.py` L191), 本仓库不列全 (gap ledger).
+
+### 5.3 评测代码流程 (`eval.py`, 对应 `main.py` L48-L186)
+
+```
+evaluate(policy, env, num_tasks, num_trials, max_steps)
+  for task_id:
+    for episode_idx:                                   run_episode
+      obs, prompt = env.reset(task_id, episode_idx)    # LIBERO: reset + set_init_state(initial_states[episode_idx])
+      前 num_steps_wait 步发 dummy action               # LIBERO: 10 步等物体落稳
+      plan = deque()
+      while t < max_steps and not done:
+        if plan 为空:                                   # 上一个 chunk 执行完
+          raw = libero_obs_to_raw(obs, prompt)          # 旋转 180°, 四元数 → 轴角, 拼 8 维 state
+          chunk = policy.infer(raw)["actions"][0]       # [50, 7]; 内部: build_batch → prefix → 10 步 Euler → 逆变换
+          plan.extend(chunk[:replan_steps])             # 只留 5 步
+        obs, done, _ = env.step(plan.popleft())
+      score = 1.0 if done else 0.0                      # 或 rubric_score(points, max_points)
+    per_task[task_id] = mean(score)
+  mean_over_tasks, mean_over_episodes
+```
+
+与真机的区别只有两处: `replan_steps` 5 vs 25 / 16 (Appendix D), 以及 `done` 由仿真给出 vs 人按 rubric 给分.
+
+### 5.4 已披露的数字 (只陈述)
+
+| 模型 | Spatial | Object | Goal | LIBERO-10 | 平均 | 来源 |
+|---|---|---|---|---|---|---|
+| π0.5 微调 30k 步 (`pi05_libero`) | 98.8 | 98.2 | 98.0 | 92.4 | 96.85 | `examples/libero/README.md` |
+| π0 (本仓库复现的模型) | 未披露 | | | | | π0 论文 v1 无 LIBERO 数字; openpi README 只给 π0.5 |
+
+论文 Fig. 7 / 9 / 11 / 12 的真机得分以图给出, 无表格数值, 不转录.
+
+### 5.5 本仓库的检查
+
+`test_parity.py` (CPU, 约 6 秒):
 
 - paper 配置在 meta 设备上的总参数量 3,238,048,528 与 3.2 节分项;
-- tiny 配置 `Pi0.sample_actions` 与手工串联 `../vlm` / `../action_expert` / `../flow_matching` 的结果逐元素相等 (组装没有改变任何计算);
-- `Pi0Policy.infer` 端到端 shape: 两台不同相机数、不同维度的假想机器人 (7 维单腕相机, 14 维双腕相机), 输出 [B, 50, d];
-- 传入相同 `noise` 时输出确定 (推理无随机性, 除噪声外).
+- tiny 配置 `Pi0.sample_actions` 与手工串联 `../vlm` / `../action_expert` / `../flow_matching` 的结果逐元素相等;
+- `Pi0Policy.infer` 端到端 shape: 7 维单腕相机与 14 维双腕相机两台假想机器人;
+- 传入相同 `noise` 时输出确定; 夹爪维不加 state, 关节维加 state;
+- 评测循环: 推理调用次数 = ⌈步数 / replan_steps⌉, 上限步数生效, 成功计分与两种聚合正确, `libero_obs_to_raw` 的 shape 与 180° 旋转, `quat2axisangle` 的恒等四元数给零向量.
 
 ```
 uv run pytest pi/pi0/infer -q
 uv run python -m pi.pi0.infer.model      # tiny 配置端到端一次, 打印每环节 shape 与耗时
+uv run python -m pi.pi0.infer.eval       # 假环境上 2 任务 x 3 episode 的评测循环
 ```
-
-### 5.2 论文的评测 (只陈述)
-
-| 项目 | 内容 | 来源 |
-|---|---|---|
-| 指标 | 每个任务 10 个 episode, 归一化得分平均: 完全成功 1.0, 部分成功按 rubric 给分 (如 bussing 按正确放置的物体比例) | π0 Sec. V-A, Appendix E |
-| 平台 | UR5e 单臂, 双臂 UR5e, Franka, 双臂 Trossen (ALOHA), 双臂 ARX, 移动 Fibocom / Trossen 等 7 种构型 | π0 Sec. V, Fig. 4 |
-| 三组实验 | (A) 预训练后直接评测 (out-of-box): 叠衬衫、简单 / 困难 bussing、装杂货、取吐司, 对比 OpenVLA、Octo、π0-small; (B) 语言跟随: bussing、摆桌、装杂货, 对比 flat / 人类高层指令 / VLM 高层指令; (C) 微调新任务: 叠碗、叠毛巾、微波炉放保鲜盒、换纸巾、Franka 抽屉放物, 对比从零训练与 ACT / Diffusion Policy; 以及多阶段长任务 (叠衣、bussing、装箱、煎蛋等) | π0 Sec. V-A, B, C, D |
-| 公开 benchmark | 论文未在 LIBERO 等公开 benchmark 上报数 (v1); openpi 提供 `pi0_libero` 微调配置 (`config.py` L653) | gap ledger |
-| 本仓库对齐程度 | 不复现任何评测; 只对齐参数量与 shape | 仓库原则 |
 
 ## 6. cost 信息
 
@@ -155,6 +233,9 @@ uv run python -m pi.pi0.infer.model      # tiny 配置端到端一次, 打印每
 | `Pi0Policy.infer` 输出链 | `policy.py` L92-L106; `policy_config.py` L84-L88 |
 | 计时 | `policy.py` L91-L106 (`policy_timing.infer_ms` 只计模型) |
 | 机器人 adapter | `libero_policy.py` L30-L100, `aloha_policy.py` |
+| `eval.py` 常量, `libero_obs_to_raw`, `quat2axisangle` | `examples/libero/main.py` L17-L18, L28-L38, L60-L71, L113-L141, L199-L214 |
+| `run_episode`, `evaluate` | `examples/libero/main.py` L75-L186; 论文 Sec. V-A, Appendix D |
+| `rubric_score` | 论文 Appendix E |
 | 论文 | Sec. III (模型), Sec. V (评测), Appendix D + Table I (推理), Appendix E (rubric) |
 
 ## 8. gap ledger
@@ -167,7 +248,9 @@ uv run python -m pi.pi0.infer.model      # tiny 配置端到端一次, 打印每
 | 服务化 | openpi 的 websocket policy server / client 不复现 |
 | 机器人 adapter | 相机改名、夹爪换算是每台机器人一份的代码, 本仓库只在 `../data` 讲了槽位规则 |
 | 4090 之外的延时 | 未披露 |
-| 公开 benchmark 分数 | 论文 v1 未报 LIBERO 等 |
+| 公开 benchmark 分数 | 论文 v1 未报 LIBERO; openpi 只报 π0.5 的 LIBERO 分数 |
+| LIBERO 任务全文 | 由 LIBERO 包的 `task.language` 给出, 本仓库不 vendor; LIBERO 论文 arXiv:2306.03310 未 pin 版本 |
+| 真机评测 | 无法复现; rubric 已转录 |
 | 数值对齐 | 只对齐参数量与 shape |
 
 ## 9. 机器人概念表
