@@ -37,7 +37,7 @@
 - 优化器, 学习率 schedule, 冻结策略, 预训练与 post-training 的 curriculum (→ `train`).
 
 **评测**
-- benchmark, 指标, 与论文对齐到什么程度 (→ `infer`, `train`).
+- 评测环境接口 (LIBERO 观测键 / 动作维度 / 初始状态 / 步数上限), 论文任务与 rubric, 二值成功率与归一化得分的定义与聚合, 带重规划的 episode 循环 (→ `infer/eval.py`); 训练侧的验证 (→ `train`).
 
 **背景事实 (只陈述, 不写代码)**
 - PaliGemma checkpoint 的选取, 其预训练 recipe 与模型细节 (→ `vlm` README).
