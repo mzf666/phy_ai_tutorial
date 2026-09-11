@@ -134,3 +134,59 @@ def test_policy_gripper_dim_is_absolute_and_joints_are_delta():
         x_0 = m.sample_actions(obs, noise).numpy()
     np.testing.assert_allclose(out[..., 6], x_0[..., 6], atol=1e-5)  # gripper: absolute, untouched
     np.testing.assert_allclose(out[..., :6], x_0[..., :6] + raw["state"][:, None, :6], atol=1e-5)  # joints: + q_t
+
+
+# ---------------------------------------------------------------- evaluation loop (examples/libero/main.py)
+def _policy():
+    torch.manual_seed(0)
+    return M.Pi0Policy(M.tiny_pi0(), PromptTokenizer(ByteEncoder()), _robot(7, 6, -1))
+
+
+def test_run_episode_replans_every_k_steps_and_respects_max_steps():
+    from pi.pi0.infer import eval as E
+
+    class NeverDone(E.ToyEnv):
+        def step(self, action):
+            obs, _, info = super().step(action)
+            return obs, False, info
+
+    r = E.run_episode(_policy(), NeverDone(7), 0, 0, max_steps=12, replan_steps=5)
+    assert r.score == 0.0 and r.steps == 12
+    assert r.infer_calls == 3  # ceil(12 / 5): chunks cover steps 0-4, 5-9, 10-11
+
+
+def test_evaluate_aggregates_per_task_and_overall():
+    from pi.pi0.infer import eval as E
+
+    class Scripted(E.ToyEnv):
+        """task 0 always succeeds at step 2, task 1 succeeds only on even episodes."""
+
+        def reset(self, task_id, episode_idx):
+            self.ok = task_id == 0 or episode_idx % 2 == 0
+            self.t = 0
+            return super().reset(task_id, episode_idx)
+
+        def step(self, action):
+            self.t += 1
+            return self._obs(), self.ok and self.t >= 2, {}
+
+    out = E.evaluate(_policy(), Scripted(7), num_tasks=2, num_trials=4, max_steps=6)
+    assert out["per_task"] == {0: 1.0, 1: 0.5}
+    assert out["mean_over_tasks"] == 0.75 and out["mean_over_episodes"] == 0.75
+    assert len(out["episodes"]) == 8 and all(e.steps <= 6 for e in out["episodes"])
+
+
+def test_rubric_score_and_libero_helpers():
+    from pi.pi0.infer import eval as E
+
+    assert E.rubric_score(9, 12) == 0.75 and E.rubric_score(4, 4) == 1.0
+    np.testing.assert_allclose(E.quat2axisangle(np.array([0, 0, 0, 1.0])), np.zeros(3))
+    aa = E.quat2axisangle(np.array([0, 0, np.sin(0.3), np.cos(0.3)]))  # 0.6 rad about z
+    np.testing.assert_allclose(aa, [0, 0, 0.6], atol=1e-6)
+    obs = {"agentview_image": np.arange(256 * 256 * 3, dtype=np.uint8).reshape(256, 256, 3),
+           "robot0_eye_in_hand_image": np.zeros((256, 256, 3), np.uint8),
+           "robot0_eef_pos": np.zeros(3), "robot0_eef_quat": np.array([0, 0, 0, 1.0]), "robot0_gripper_qpos": np.zeros(2)}
+    raw = E.libero_obs_to_raw(obs, "x")
+    assert raw["images"]["base_0_rgb"].shape == (1, 256, 256, 3) and raw["state"].shape == (1, E.LIBERO_STATE_DIM)
+    assert raw["images"]["base_0_rgb"][0, 0, 0, 0] == obs["agentview_image"][-1, -1, 0]  # rotated 180 degrees
+    assert set(E.LIBERO_SUITES) == {"libero_spatial", "libero_object", "libero_goal", "libero_10", "libero_90"}
