@@ -32,6 +32,32 @@
 
 常量: SigLIP So400m/14 = {width 1152, depth 27, mlp 4304, heads 16, patch 14} (`openpi@215abfb siglip.py` L308-L370); Gemma 2B = {width 2048, depth 18, mlp 16384, heads 8, kv heads 1, head_dim 256, vocab 257152} (`gemma.py` L41, L79-L87).
 
+### 1.1 `make_attn_mask` 的逻辑与动机
+
+一个一维向量 `mask_ar` 描述整张二维 mask. `mask_ar[j] = True` 表示 token j 开一个新块, 它之前的 token 不能看它; `cumsum(mask_ar)` 给每个 token 一个块编号; query i 能看 key j 当且仅当 `块(j) ≤ 块(i)` 且两者都是有效 token (`input_mask`). 也就是块之间因果, 块内双向.
+
+计算例子, 6 个 token: 两个图像、一个文本、一个 state、两个 action:
+
+```
+token      : img0  img1  txt   state  act0  act1
+mask_ar    :  0     0     0      1     1     0
+cumsum(块) :  0     0     0      1     2     2
+
+            img0 img1 txt state act0 act1      (行 query, 列 key)
+img0   块0    1    1   1    0    0    0
+img1   块0    1    1   1    0    0    0
+txt    块0    1    1   1    0    0    0
+state  块1    1    1   1    1    0    0
+act0   块2    1    1   1    1    1    1
+act1   块2    1    1   1    1    1    1
+```
+
+前缀三个 token 互相全看但看不到 state 和 action; state 看前缀和自己; 两个 action 看全部且彼此双向. 这正是 π0 论文 Appendix B 的三块结构. 若 `txt` 是 padding (`input_mask` False), 第 2 行和第 2 列整体置 0.
+
+只换 `mask_ar` 就得到所有常见结构: `[0 0 0 0 0 0]` 全双向 (编码器); `[1 1 1 1 1 1]` 纯因果 (普通 LLM); `[0 0 0 1 1 1]` 前缀双向后缀因果 (PaliGemma 的 prefix-LM). π0 真实的 `mask_ar` 长 867: 768 个图像 token 和 48 个文本 token 全 0, state 为 1, 第一个 action 为 1, 其余 49 个 action 为 0.
+
+动机 (函数来自 big_vision, PaliGemma 训练 prefix-LM 就用它): 一是可组合, `embed_prefix` 和 `embed_suffix` 各返回自己的一维 `ar_mask`, `concat` 后调一次就是整张矩阵, 不用手写二维块; 二是块编号只依赖 `cumsum`, 推理时可以只为 suffix 的行建 mask、列上拼接已缓存的 prefix (`pi0.py` `sample_actions` 的 `full_attn_mask`), KV cache 和 mask 的语义天然一致.
+
 ## 2. 复现范围
 
 | 有代码 | 只有事实 (背景) |

@@ -258,7 +258,26 @@ def make_attn_mask(input_mask: torch.Tensor, mask_ar: torch.Tensor) -> torch.Ten
     """input_mask bool[B, N] (False = padding), mask_ar bool[N] or [B, N] (True = this token cannot be seen by
     earlier tokens, i.e. it opens a new block) -> bool[B, N, N], True where query i may attend key j.
     Token i attends j iff cumsum(mask_ar)[j] <= cumsum(mask_ar)[i] and both are valid.
-    [0 0 0 1 1 1] = prefix-LM; [1 1 1 1] = causal; [0 0 1 0 1 0] = three bidirectional blocks in causal order."""
+    [0 0 0 1 1 1] = prefix-LM; [1 1 1 1] = causal; [0 0 1 0 1 0] = three bidirectional blocks in causal order.
+
+    Logic: cumsum(mask_ar) assigns every token a block id; blocks are causal w.r.t. each other, tokens inside a
+    block are bidirectional. Worked example with 6 tokens [img0 img1 txt | state | act0 act1]:
+        mask_ar = [0 0 0 1 1 0]  ->  block id = [0 0 0 1 2 2]
+        query\key   img0 img1 txt state act0 act1
+        img0  (b0)    1    1    1    0    0    0
+        img1  (b0)    1    1    1    0    0    0
+        txt   (b0)    1    1    1    0    0    0
+        state (b1)    1    1    1    1    0    0
+        act0  (b2)    1    1    1    1    1    1
+        act1  (b2)    1    1    1    1    1    1
+    The prefix sees only itself, state sees prefix + itself, actions see everything and each other: the three
+    blocks of pi0 Appendix B. If txt were padding (input_mask False) its row and column would be all 0.
+    Real pi0: mask_ar has 768 image + 48 text zeros, then 1 (state), 1 (first action), 49 zeros.
+
+    Why this encoding (from big_vision, used for PaliGemma's prefix-LM): the prefix and suffix each return their
+    own 1-D ar_mask, a concat + one call gives the full 2-D mask; and because block ids depend only on cumsum,
+    at inference the suffix rows can be built against the cached prefix keys (pi0.py sample_actions,
+    `full_attn_mask`), so the KV cache and the mask agree by construction."""
     mask_ar = mask_ar.to(torch.long).expand(input_mask.shape)
     c = mask_ar.cumsum(dim=1)
     attn = c[:, None, :] <= c[:, :, None]
