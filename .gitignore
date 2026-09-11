@@ -5,3 +5,4 @@ __pycache__/
 *.ckpt
 *.pt
 *.safetensors
+.upstream/
