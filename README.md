@@ -121,6 +121,8 @@
 
 倾向单文件可读: 一个文件能从上读到下, 不需要跳转.
 
+`model.py` 只写推理路径 (模型结构, 前向, KV cache); 训练专用的前向 (例如 prefix + suffix 一次过的 joint forward), loss, 采样分布, 优化器一律放 `train.py`, 在推理代码稳定后再加. 训练和推理分开写, 读者先看懂一次推理再看训练.
+
 主文件 (`model.py`, 或 `data.py` 这类没有模型的 module) 必须带一个 `main()` 与 `if __name__ == "__main__"`: 用 `tiny` 配置走一遍完整前向, 逐步打印每个中间张量的 shape 和关键标量, 让读者不看测试也能看到一次 forward 是怎么走的. 运行方式写在 README 第 5 节.
 
 
