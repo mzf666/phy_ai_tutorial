@@ -19,7 +19,10 @@ from collections.abc import Callable
 
 import torch
 
+import numpy as np
+
 from pi.pi0.action_expert.model import ACTION_DIM, ACTION_HORIZON, ActionProjections, MoEGemma, suffix_forward
+from pi.pi0.data.data import NormStats, to_absolute_actions, unnormalize
 
 VelocityFn = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]  # (x_t [B,50,32], t [B]) -> v [B,50,32]
 
@@ -49,6 +52,34 @@ def sample_actions(velocity_fn: VelocityFn, noise: torch.Tensor, num_steps: int 
         x_t = x_t + dt * v_t
         t = t + dt
     return x_t
+
+
+def to_executable_actions(x_0: torch.Tensor, state: torch.Tensor, norm_stats: dict[str, NormStats],
+                          delta_mask, native_dim: int) -> np.ndarray:
+    """From the sampler output to what the robot controller consumes. Inverse of ../data, in openpi's order
+    (policy.py L92-L102 builds {"state": normalized padded state, "actions": x_0}; policy_config.py L84-L88 then
+    applies Unnormalize -> AbsoluteActions -> the robot's Outputs transform):
+
+      x_0    f32[B, 50, 32]  normalized, delta on joint dims, zero-padded          (model space)
+      1. unnormalize actions AND state with the robot's norm_stats: x * (std + 1e-6) + mean, padded dims pass through
+                            -> physical units (rad / m / gripper), still delta       (transforms.py L168-L171)
+      2. to_absolute_actions: joint dims += the current state q_t (the same q_t the model was given), gripper dims
+         (delta_mask False) untouched                                                (transforms.py L226-L245)
+      3. truncate to the robot's native dim, e.g. [:7] for LIBERO, [:14] for ALOHA   (libero_policy.py L94-L100)
+      -> f32[B, 50, native_dim]: row t' is the absolute target joint position + gripper command for control step t'.
+
+    What happens next is not code in this repo: a platform-specific gripper conversion (aloha_policy.py maps pi's
+    gripper angle back to ALOHA's linear position), then the controller sends one row per control period to the arm's
+    low-level position controller (the PD loop lives in the motor drivers; the model never outputs torques). Only the
+    first 25 rows (50 Hz) or 16 rows (20 Hz) are executed, open-loop, before the next observation is taken
+    (paper Appendix D).
+
+    `state` is the normalized 32-dim state that went into embed_suffix; it is unnormalized here (openpi does the same,
+    the Unnormalize transform covers both keys of norm_stats)."""
+    a = unnormalize(x_0.detach().cpu().numpy(), norm_stats["actions"])
+    q = unnormalize(state.detach().cpu().numpy(), norm_stats["state"])
+    a = to_absolute_actions(q, a, delta_mask)
+    return a[..., :native_dim]
 
 
 # ======================================================================================
@@ -96,8 +127,27 @@ def main():
         # --- same thing through the public entry point ---
         x_0 = sample_actions(v, noise, num_steps)
         assert torch.allclose(x_0, x_t)
-    print("[output] actions (normalized, delta, 32-dim padded)", tuple(x_0.shape),
-          " -> ../data unnormalize / to-absolute / truncate -> execute the first 25 (or 16) steps")
+    print("[output] x_0 (normalized, delta, 32-dim padded)", tuple(x_0.shape))
+
+    # --- from x_0 to a control signal, for a pretend 7-dim robot (6 joints + 1 gripper, 20 Hz, like LIBERO) ---
+    from pi.pi0.data.data import make_bool_mask
+
+    native_dim = 7
+    norm_stats = {  # in practice loaded from the checkpoint's norm_stats.json, computed over that robot's training set
+        "state": NormStats(mean=np.zeros(native_dim, np.float32), std=np.full(native_dim, 0.5, np.float32)),
+        "actions": NormStats(mean=np.zeros(native_dim, np.float32), std=np.full(native_dim, 0.1, np.float32)),
+    }
+    delta_mask = make_bool_mask(6, -1)  # joints are delta, the gripper is absolute
+    a = unnormalize(x_0.numpy(), norm_stats["actions"])
+    q = unnormalize(state.numpy(), norm_stats["state"])
+    print("[post 1] unnormalize: actions", tuple(a.shape), "state", tuple(q.shape), " physical units, still delta on joints")
+    a = to_absolute_actions(q, a, delta_mask)
+    print("[post 2] to_absolute_actions: joints += q_t, gripper untouched", tuple(a.shape))
+    a = a[..., :native_dim]
+    print("[post 3] truncate to native dim", tuple(a.shape), " = [B, 50, 7]: absolute joint targets + gripper per control step")
+    assert np.allclose(a, to_executable_actions(x_0, state, norm_stats, delta_mask, native_dim))
+    print("[exec]   send rows 0..15 (20 Hz robot: 16 steps = 0.8 s) one per control period to the position controller,"
+          " then observe again and re-run")
 
 
 if __name__ == "__main__":

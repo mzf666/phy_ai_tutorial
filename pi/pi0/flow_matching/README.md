@@ -62,7 +62,7 @@ openpi 用扩散文献的约定: t = 1 是纯噪声, t = 0 是干净动作, 推�
 |---|---|
 | Beta 时间步采样, 线性插值, 目标速度, MSE | 为什么选 Beta 而不是均匀 / logit-normal (第 4.2 节) |
 | 10 步 Euler 采样, 前缀 cache 复用 | 训练 loop, 优化器, 冻结 (→ `../train`) |
-| 训练式 joint forward 与推理式 cache 路径的速度场一致性检查 | 归一化逆变换与执行 (→ `../data`, `../infer`) |
+| 训练式 joint forward 与推理式 cache 路径的速度场一致性检查 | 平台特定的夹爪换算与控制器 (第 3.1 节第 4-5 步) |
 
 ## 3. 推理侧
 
@@ -72,6 +72,21 @@ openpi 用扩散文献的约定: t = 1 是纯噪声, t = 0 是干净动作, 推�
 2. `noise ~ N(0, I)`, shape [B, 50, 32], t = 1.0.
 3. 循环 10 次: `embed_suffix(state, x_t, t)` → 51 token → `suffix_forward` (attend 到 cache) → `decode` → v; `x_t ← x_t − 0.1 · v`; `t ← t − 0.1`.
 4. 返回 x_0.
+
+### 3.1 x_0 怎么变成可执行的控制信号
+
+x_0 是 [B, 50, 32] 的归一化、delta、零填充的模型空间量, 离控制器还差三步逆变换 (`../data` 的函数, 本 module `to_executable_actions` 按 openpi 的顺序串起来) 和一步执行. openpi 的顺序: `policy.py` L92-L102 把归一化后的 32 维 state 和 x_0 打包, `policy_config.py` L84-L88 依次施加 `Unnormalize` → `AbsoluteActions` → 机器人自己的 `Outputs`. 以 LIBERO 的 7 维 Franka 为例:
+
+| 步 | 操作 | shape | 含义 | 上游 |
+|---|---|---|---|---|
+| 0 | `sample_actions` 输出 | [B, 50, 32] | 归一化 delta, 填充 | |
+| 1 | `unnormalize(actions)` 与 `unnormalize(state)`: `x · (std + 1e-6) + mean`, 填充维透传 | [B, 50, 32], [B, 32] | 物理单位 (弧度 / 米 / 夹爪开度), 关节维仍是 delta | `transforms.py` L168-L171 |
+| 2 | `to_absolute_actions(state, actions, delta_mask)`: 关节维加回当前 q_t (50 步加同一个), 夹爪维不动 | [B, 50, 32] | 绝对目标 | `transforms.py` L226-L245 |
+| 3 | 截前 d 维 | [B, 50, 7] | 6 个关节目标角 + 1 个夹爪指令, 每行一个控制步 | `libero_policy.py` L94-L100 |
+| 4 | 平台换算 (不在本仓库) | | ALOHA 把 π 内部夹爪角度换回线性位置; LIBERO 翻转夹爪符号 | `aloha_policy.py`, `libero_policy.py` |
+| 5 | 执行 | 前 16 行 (20 Hz) 或 25 行 (50 Hz) | 每个控制周期发一行给机械臂的底层位置控制器 (PD 环在电机驱动里, 模型不输出力矩); 开环, 期间不看新观测, 不与上一个 chunk 混合 | 论文 Appendix D |
+
+第 2 步用的 q_t 必须是推理时喂给模型的那个状态 (openpi 把它随输出一起带出来再反归一化), 不是执行过程中读到的新状态. `model.py` 的 `main()` 用一个假想的 7 维机器人把 1-3 步的 shape 打印出来.
 
 延时: 论文 Table I "x10 action forward pass (flow)" 27 ms (RTX 4090, 三张图), 即每步约 2.7 ms; 端到端 73 ms. 论文 Appendix D 还说明 s = 0.999 的截断允许最多 1000 步 (δ > 1 − s), 但实验用 10.
 
@@ -133,6 +148,7 @@ uv run python -m pi.pi0.flow_matching.train     # 一步训练前向, 打印 t, 
 | `make_train_velocity_fn`, `compute_loss` | `pi0.py` L188-L214 |
 | `make_velocity_fn` | `pi0.py` L239-L269 (`step` 内部) |
 | `sample_actions` | `pi0.py` L216-L279; 论文 Sec. III Euler 公式, Appendix D |
+| `to_executable_actions` | `policy.py` L92-L102, `policy_config.py` L84-L88, `transforms.py` L168-L171 与 L226-L245, `libero_policy.py` L94-L100 |
 | 符号约定 | `pi0.py` L226-L227 注释 |
 
 ## 8. gap ledger

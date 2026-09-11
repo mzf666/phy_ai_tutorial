@@ -4,6 +4,7 @@ References: openpi @ 215abfb217dbac7d5f1273282331b9b1866c0479 (src/openpi/models
 pi0 paper arXiv:2410.24164v1 Sec. III, Appendix B. Run on CPU: `uv run pytest pi/pi0/flow_matching -q`.
 """
 
+import numpy as np
 import torch
 
 from pi.pi0.action_expert import model as A
@@ -105,3 +106,22 @@ def test_train_and_inference_velocity_agree():
         v_inf = M.make_velocity_fn(llm, proj, kv, prefix_mask, state)(x_t, t)
         v_train = T.make_train_velocity_fn(llm, proj, prefix_emb, prefix_mask, prefix_ar, state)(x_t, t)
     torch.testing.assert_close(v_inf, v_train, atol=1e-5, rtol=1e-5)
+
+
+# ---------------------------------------------------------------- post-processing (policy_config.py L84-L88)
+def test_to_executable_actions_inverts_the_data_pipeline():
+    """normalize(delta(pad(absolute))) -> to_executable_actions gives the absolute native-dim actions back."""
+    from pi.pi0.data import data as DATA
+
+    d = 7
+    rng = np.random.default_rng(0)
+    q = rng.normal(size=(B, d)).astype(np.float32)
+    a_abs = rng.normal(size=(B, H, d)).astype(np.float32)
+    stats = {"state": DATA.NormStats(mean=rng.normal(size=d).astype(np.float32), std=rng.uniform(0.2, 2, d).astype(np.float32)),
+             "actions": DATA.NormStats(mean=rng.normal(size=d).astype(np.float32), std=rng.uniform(0.2, 2, d).astype(np.float32))}
+    mask = DATA.make_bool_mask(6, -1)
+    a_model = DATA.pad_to_dim(DATA.normalize(DATA.to_delta_actions(q, a_abs, mask), stats["actions"]), D)
+    q_model = DATA.pad_to_dim(DATA.normalize(q, stats["state"]), D)
+    out = M.to_executable_actions(torch.from_numpy(a_model), torch.from_numpy(q_model), stats, mask, d)
+    assert out.shape == (B, H, d)
+    np.testing.assert_allclose(out, a_abs, atol=1e-4)
