@@ -116,9 +116,10 @@ def test_moe_with_only_expert0_equals_single_expert_gemma():
     torch.testing.assert_close(kv[0][0], kv_ref[0][0])
 
 
-def test_cached_suffix_forward_equals_joint_forward():
-    """Inference path (prefix cache + suffix only) must give the same suffix output as the training path,
-    including with padding in the prefix (a masked camera and a short prompt)."""
+def test_cached_suffix_forward_equals_one_pass_over_full_sequence():
+    """Inference path (prefix cache + suffix only) must give the same suffix output as one pass over the full
+    867-token sequence with the three-block mask (what train.py will do), including with padding in the prefix
+    (a masked camera and a short prompt). The full pass is built inline here; model.py holds inference code only."""
     torch.manual_seed(0)
     vlm_cfg, exp_cfg = M.tiny_experts()
     llm = M.MoEGemma((vlm_cfg, exp_cfg)).eval()
@@ -130,7 +131,9 @@ def test_cached_suffix_forward_equals_joint_forward():
     prefix_ar = torch.zeros(P, dtype=torch.bool)
     suffix_emb, suffix_mask, suffix_ar = ae.embed_suffix(torch.randn(B, 32), torch.randn(B, 50, 32), torch.rand(B))
     with torch.no_grad():
-        p_out, s_joint = M.joint_forward(llm, prefix_emb, prefix_mask, prefix_ar, suffix_emb, suffix_mask, suffix_ar)
+        full_mask = torch.cat([prefix_mask, suffix_mask], 1)
+        full_ar = torch.cat([prefix_ar, suffix_ar], 0)
+        (p_out, s_joint), _ = llm([prefix_emb, suffix_emb], full_mask.long().cumsum(1) - 1, M.make_attn_mask(full_mask, full_ar))
         assert p_out.shape == (B, P, vlm_cfg.width) and s_joint.shape == (B, S, exp_cfg.width)
         (_, none), kv = llm([prefix_emb, None], prefix_mask.long().cumsum(1) - 1, M.make_attn_mask(prefix_mask, prefix_ar))
         assert none is None and kv[0][0].shape == (B, P, exp_cfg.num_kv_heads, exp_cfg.head_dim)

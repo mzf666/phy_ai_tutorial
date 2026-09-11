@@ -78,7 +78,7 @@ ax.text(mx + 2.35, 1.95, "experts touch only inside the orange box; widths may d
         ha="center", fontsize=8, va="center",
         bbox=dict(boxstyle="round,pad=0.35", fc="#fff8dc", ec="#999", lw=0.8))
 ax.text(mx + 2.35, 1.1, "inference: xs=[prefix, None] once -> kv_cache; then xs=[None, suffix] x 10 steps\n"
-        "training: xs=[prefix, suffix] in one pass (joint_forward)", ha="center", fontsize=8, va="center")
+        "training: xs=[prefix, suffix] in one pass (train.py)", ha="center", fontsize=8, va="center")
 
 # ================= right column: the three-block mask =================
 rx = 11.05

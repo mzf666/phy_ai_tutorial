@@ -6,11 +6,12 @@ Minimal PyTorch re-implementation of openpi's JAX code. Source of truth:
   paper   pi0 arXiv:2410.24164v1 Sec. III, Appendix B, Appendix D
 Upstream license: Apache-2.0 (openpi, big_vision). This file re-implements, it does not copy.
 
-What this module covers: (state, noisy_actions, timestep) -> 51 suffix tokens in the expert width (ActionProjections,
-used once at entry and once at exit); a Gemma stack where
-every layer holds one set of weights per expert and the experts meet only inside attention; the training-style joint
-forward over prefix + suffix and the inference-style suffix forward against a prefix KV cache; decoding the last 50
-tokens to the velocity field. Timestep sampling, the loss and the Euler loop live in ../flow_matching.
+What this module covers (inference only, as every model.py in this repo): (state, noisy_actions, timestep) -> 51
+suffix tokens in the expert width (ActionProjections, used once at entry and once at exit); a Gemma stack where every
+layer holds one set of weights per expert and the experts meet only inside attention; the inference-style suffix
+forward against a prefix KV cache; decoding the last 50 tokens to the velocity field. The training-time joint forward
+over prefix + suffix belongs to train.py (added later); timestep sampling, the loss and the Euler loop live in
+../flow_matching.
 
 Building blocks (RMSNorm, ExpertAttnProj, attend, apply_rope, GeGLU, GemmaBlock, make_attn_mask) are imported from
 ../vlm/model.py; the single-expert GemmaBlock there is reused as "one expert's slot" of a two-expert block.
@@ -25,7 +26,7 @@ absent (test_parity asserts this bit-for-bit); the final model in ../infer uses 
 SigLIP, the vocabulary Embedder and embed_prefix. This mirrors openpi, which builds a single
 `_gemma.Module(configs=[paligemma_config, action_expert_config])` (pi0.py L73-L80) and no standalone Gemma 2B.
 At inference expert 0 runs once per action chunk (xs=[prefix, None] -> kv cache) and expert 1 runs 10 times
-(xs=[None, suffix]); in training both run together in one pass (xs=[prefix, suffix]).
+(xs=[None, suffix]); in training both run together in one pass (xs=[prefix, suffix], train.py).
 Attribute names follow the openpi parameter tree; expert i > 0 gets the "_i" suffix in openpi (gemma.py L443-L451),
 here it is experts[i].
 """
@@ -114,7 +115,7 @@ class MoEGemma(nn.Module):
     forward(xs, positions, mask, kv_cache=None) -> (list of final-normed hidden states or None, kv_cache list over layers).
     This is THE pi0 transformer: experts[0] of every layer carries the Gemma 2B weights that ../vlm's `Gemma` introduced,
     experts[1] the 300M action expert. `xs[i] = None` means expert i has no tokens this call (inference: prefix pass is
-    [prefix, None], each denoising step is [None, suffix]); training passes [prefix, suffix] together.
+    [prefix, None], each denoising step is [None, suffix]); training (train.py) passes [prefix, suffix] together.
     The VLM's vocabulary embedding belongs to expert 0 (gemma.py L355-L359); ../vlm's PaliGemma already owns one, so
     `with_embedder` is off by default here and ../infer decides where it lives."""
 
@@ -185,18 +186,10 @@ class ActionProjections(nn.Module):
 
 
 # ======================================================================================
-# 4. The two ways prefix and suffix meet. openpi@215abfb pi0.py L202-L211 (training) and L239-L269 (inference).
+# 4. How the suffix meets the cached prefix at inference. openpi@215abfb pi0.py L239-L269 (sample_actions.step).
+#    The training-time counterpart (prefix and suffix in ONE pass of 867 tokens, xs=[prefix, suffix], pi0.py
+#    L202-L211) is training code and lives in train.py, not here.
 # ======================================================================================
-def joint_forward(llm: MoEGemma, prefix_emb, prefix_mask, prefix_ar, suffix_emb, suffix_mask, suffix_ar):
-    """One pass over [prefix | suffix]: expert 0 gets the prefix, expert 1 the suffix. Returns (prefix_out, suffix_out)."""
-    input_mask = torch.cat([prefix_mask, suffix_mask], dim=1)  # [B, 867]
-    ar_mask = torch.cat([prefix_ar, suffix_ar], dim=0)  # [867]: 816 x 0, 1, 1, 49 x 0 -> the three blocks of Appendix B
-    mask = make_attn_mask(input_mask, ar_mask)  # [B, 867, 867]
-    positions = input_mask.long().cumsum(1) - 1  # L208, padding consumes no positions
-    (prefix_out, suffix_out), _ = llm([prefix_emb, suffix_emb], positions, mask)
-    return prefix_out, suffix_out
-
-
 def suffix_forward(llm: MoEGemma, kv_cache, prefix_mask, suffix_emb, suffix_mask, suffix_ar):
     """Suffix only, attending into the cached prefix keys / values: expert 0 is absent. Returns suffix_out [B, 51, w1].
     Mask rows are the 51 suffix queries; columns are 816 cached prefix keys (visible iff valid) then 51 suffix keys."""
@@ -218,7 +211,7 @@ def tiny_experts() -> tuple[GemmaConfig, GemmaConfig]:
 
 
 # ======================================================================================
-# 5. Walk one training-style joint forward and one inference-style cached forward with the tiny config.
+# 5. Walk one inference step with the tiny config: suffix embedding, prefix cache, cached suffix forward, decode.
 #    uv run python -m pi.pi0.action_expert.model
 # ======================================================================================
 def main():
@@ -233,11 +226,11 @@ def main():
     # the two pieces visible. See README Sec. 1.4 for the vlm / action_expert relationship.
     pg = PaliGemma(tiny_vit(), vlm_cfg).eval()
     llm = MoEGemma((vlm_cfg, exp_cfg)).eval()
-    expert = ActionProjections(exp_cfg).eval()
+    proj = ActionProjections(exp_cfg).eval()
     n = lambda m: sum(p.numel() for p in m.parameters())
     print(f"tiny configs: vlm expert={vlm_cfg}\n              action expert={exp_cfg}")
     print(f"params: MoEGemma expert0 {sum(n(l.experts[0]) for l in llm.layers):,}  expert1 {sum(n(l.experts[1]) for l in llm.layers):,}"
-          f"  ActionProjections projections {n(expert):,}")
+          f"  ActionProjections {n(proj):,}")
 
     # --- inputs: what ../data produces. state is consumed HERE, not by the VLM ---
     images = {k: torch.rand(B, 224, 224, 3) * 2 - 1 for k in IMAGE_KEYS}
@@ -247,64 +240,56 @@ def main():
     token_mask = torch.zeros(B, 48, dtype=torch.bool)
     token_mask[:, :9] = True
     state = torch.randn(B, ACTION_DIM)
-    noisy_actions = torch.randn(B, ACTION_HORIZON, ACTION_DIM)  # ../flow_matching makes these from actions + noise
-    timestep = torch.tensor([0.9, 0.3])  # one tau per sample; sampled by ../flow_matching, just given here
-    print("\n[input]  state f32", tuple(state.shape), " noisy_actions f32", tuple(noisy_actions.shape), " timestep f32", tuple(timestep.shape))
+    x_t = torch.randn(B, ACTION_HORIZON, ACTION_DIM)  # at inference the first x_t is pure noise (../flow_matching)
+    timestep = torch.ones(B)  # openpi convention: tau = 1 is noise, the Euler loop walks 1.0 -> 0.0 in steps of 0.1
+    print("\n[input]  state f32", tuple(state.shape), " x_t f32", tuple(x_t.shape), " timestep f32", tuple(timestep.shape))
 
     with torch.no_grad():
-        # --- 1. suffix embedding, step by step (ActionProjections.embed_suffix unrolled) ---
-        st = expert.state_proj(state)[:, None, :]
-        print("[suffix] state_proj(state)          ", tuple(st.shape), " = [B, 1, w]")
-        at_ = expert.action_in_proj(noisy_actions)
-        print("[suffix] action_in_proj(actions)    ", tuple(at_.shape), " = [B, 50, w]")
-        te = posemb_sincos(timestep, exp_cfg.width, 4e-3, 4.0)
-        print("[suffix] posemb_sincos(timestep)    ", tuple(te.shape), f" = [B, w]; sample0 first/last: {te[0, 0]:.3f} {te[0, -1]:.3f}")
-        cat = torch.cat([at_, te[:, None, :].expand(-1, ACTION_HORIZON, -1)], -1)
-        print("[suffix] concat(action, time)       ", tuple(cat.shape), " = [B, 50, 2w]")
-        mixed = expert.action_time_mlp_out(F.silu(expert.action_time_mlp_in(cat)))
-        print("[suffix] mlp_out(swish(mlp_in(.)))  ", tuple(mixed.shape), " = [B, 50, w]")
-        suffix_emb, suffix_mask, suffix_ar = expert.embed_suffix(state, noisy_actions, timestep)
-        assert torch.allclose(suffix_emb, torch.cat([st, mixed], 1))
-        print("[suffix] tokens", tuple(suffix_emb.shape), " input_mask", tuple(suffix_mask.shape), " ar_mask", suffix_ar[:4].int().tolist(), "...")
-
-        # --- 2. prefix from ../vlm (embedding only; the transformer is run below by MoEGemma expert 0) ---
+        # --- 1. prefix from ../vlm: embed once, run expert 0 once, keep the kv cache (pi0.py L233-L237) ---
         prefix_emb, prefix_mask, prefix_ar = pg.embed_prefix(images, image_masks, tokens, token_mask)
         print("[prefix] emb", tuple(prefix_emb.shape), f" valid {int(prefix_mask[0].sum())}/{prefix_mask.shape[1]}")
-
-        # --- 3. training path: one joint forward over 867 tokens ---
-        input_mask = torch.cat([prefix_mask, suffix_mask], 1)
-        ar_mask = torch.cat([prefix_ar, suffix_ar], 0)
-        mask = make_attn_mask(input_mask, ar_mask)
-        positions = input_mask.long().cumsum(1) - 1
-        P = prefix_emb.shape[1]
-        print("[joint]  input_mask", tuple(input_mask.shape), " ar_mask", tuple(ar_mask.shape), " mask", tuple(mask.shape))
-        print(f"[joint]  block ids: prefix {int(ar_mask[:P].long().cumsum(0)[-1])}, state {int(ar_mask[:P+1].long().cumsum(0)[-1])},"
-              f" actions {int(ar_mask.long().cumsum(0)[-1])}")
-        print(f"[joint]  mask rows: prefix token sees suffix? {bool(mask[0, 0, P:].any())};"
-              f" state sees actions? {bool(mask[0, P, P+1:].any())}; action sees state? {bool(mask[0, P+1, P])};"
-              f" actions bidirectional? {bool(mask[0, P+1:, P+1:].all())}")
-        print(f"[joint]  positions: last valid prefix {int(positions[0, prefix_mask[0].nonzero().max()])}, state {int(positions[0, P])}, last action {int(positions[0, -1])}")
-        xs = [prefix_emb, suffix_emb]
-        for i, layer in enumerate(llm.layers):
-            xs, kv = layer(xs, positions, mask)
-            if i == 0:
-                print("[joint]  layer 0 out: expert0", tuple(xs[0].shape), " expert1", tuple(xs[1].shape), " k/v", tuple(kv[0].shape), " = [B, 867, kv_heads, head_dim]")
-        prefix_out, suffix_out = joint_forward(llm, prefix_emb, prefix_mask, prefix_ar, suffix_emb, suffix_mask, suffix_ar)
-        assert torch.allclose(suffix_out, llm.final_norms[1](xs[1]))
-        v_t = expert.decode(suffix_out)
-        print("[joint]  suffix_out", tuple(suffix_out.shape), " -> decode -> v_t", tuple(v_t.shape), " = [B, 50, 32]")
-
-        # --- 4. inference path: prefix once (expert 0 only) -> kv cache; then suffix only (expert 1 only) ---
         pmask = make_attn_mask(prefix_mask, prefix_ar)
         ppos = prefix_mask.long().cumsum(1) - 1
         (p_out, none_out), kv_cache = llm([prefix_emb, None], ppos, pmask)
         assert none_out is None
-        print("[cache]  prefix forward with xs=[prefix, None]: out", tuple(p_out.shape), " kv_cache", len(kv_cache), "x", tuple(kv_cache[0][0].shape))
+        print("[prefix] MoEGemma xs=[prefix, None]: out", tuple(p_out.shape), " kv_cache", len(kv_cache), "x", tuple(kv_cache[0][0].shape),
+              " = [B, 816, kv_heads, head_dim]; this is all the VLM does per action chunk")
+
+        # --- 2. suffix embedding, step by step (ActionProjections.embed_suffix unrolled) ---
+        st = proj.state_proj(state)[:, None, :]
+        print("[suffix] state_proj(state)          ", tuple(st.shape), " = [B, 1, w]")
+        at_ = proj.action_in_proj(x_t)
+        print("[suffix] action_in_proj(x_t)        ", tuple(at_.shape), " = [B, 50, w]")
+        te = posemb_sincos(timestep, exp_cfg.width, 4e-3, 4.0)
+        print("[suffix] posemb_sincos(timestep)    ", tuple(te.shape), f" = [B, w]; sample0 first/last: {te[0, 0]:.3f} {te[0, -1]:.3f}")
+        cat = torch.cat([at_, te[:, None, :].expand(-1, ACTION_HORIZON, -1)], -1)
+        print("[suffix] concat(action, time)       ", tuple(cat.shape), " = [B, 50, 2w]")
+        mixed = proj.action_time_mlp_out(F.silu(proj.action_time_mlp_in(cat)))
+        print("[suffix] mlp_out(swish(mlp_in(.)))  ", tuple(mixed.shape), " = [B, 50, w]")
+        suffix_emb, suffix_mask, suffix_ar = proj.embed_suffix(state, x_t, timestep)
+        assert torch.allclose(suffix_emb, torch.cat([st, mixed], 1))
+        print("[suffix] tokens", tuple(suffix_emb.shape), " input_mask", tuple(suffix_mask.shape), " ar_mask", suffix_ar[:4].int().tolist(), "...")
+
+        # --- 3. suffix forward against the cache (suffix_forward unrolled): mask and positions, then the layers ---
+        P = prefix_emb.shape[1]
+        prefix_cols = prefix_mask[:, None, :].expand(-1, suffix_emb.shape[1], -1)
+        suffix_cols = make_attn_mask(suffix_mask, suffix_ar)
+        mask = torch.cat([prefix_cols, suffix_cols], -1)
+        positions = prefix_mask.long().sum(-1, keepdim=True) + suffix_mask.long().cumsum(-1) - 1
+        print("[cache]  mask", tuple(mask.shape), " = [B, 51, 816 + 51]; positions", tuple(positions.shape), f" start at {int(positions[0, 0])}")
+        print(f"[cache]  mask rows: state sees actions? {bool(mask[0, 0, P+1:].any())}; action sees state? {bool(mask[0, 1, P])};"
+              f" actions bidirectional? {bool(mask[0, 1:, P+1:].all())}; masked camera visible? {bool(mask[0, :, 512:768].any())}")
+        xs = [None, suffix_emb]
+        for i, layer in enumerate(llm.layers):
+            xs, kv = layer(xs, positions, mask, kv_cache[i])
+            if i == 0:
+                print("[cache]  layer 0: expert0 out", xs[0], " expert1 out", tuple(xs[1].shape), " k/v seen", tuple(kv[0].shape), " = [B, 867, kv_heads, head_dim]")
         s_out = suffix_forward(llm, kv_cache, prefix_mask, suffix_emb, suffix_mask, suffix_ar)
-        print("[cache]  suffix forward with xs=[None, suffix]: out", tuple(s_out.shape), " (mask [B, 51, 867], positions start at",
-              int(prefix_mask[0].sum()), ")")
-        print(f"[cache]  same v_t as the joint path? {torch.allclose(expert.decode(s_out), v_t, atol=1e-5)}")
-    print("\n../flow_matching wraps this in x_t = t*noise + (1-t)*a, the MSE loss, and the 10-step Euler loop")
+        assert torch.allclose(s_out, llm.final_norms[1](xs[1]))
+        v_t = proj.decode(s_out)
+        print("[cache]  suffix_out", tuple(s_out.shape), " -> decode -> v_t", tuple(v_t.shape), " = [B, 50, 32]")
+    print("\n../flow_matching repeats steps 2-3 ten times with x_t <- x_t - 0.1 * v_t, timestep <- timestep - 0.1;"
+          " the training-time joint forward is in train.py")
 
 
 if __name__ == "__main__":

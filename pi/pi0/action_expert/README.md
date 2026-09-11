@@ -34,12 +34,11 @@
 
 两个 expert 的宽度可以不同 (2048 vs 1024), 但 `num_heads`, `num_kv_heads`, `head_dim` 必须相同 (`gemma.py` L165-L168), 因为 q / k / v 在 head 维上要拼到一起做同一个 attention.
 
-**两条组合路径** (本 module 提供, `../flow_matching` 直接调用):
+**推理路径** (本 module 的 `model.py` 只写推理; 训练前向在 `train.py`, 后加):
 
-- `joint_forward(llm, prefix_emb, prefix_mask, prefix_ar, suffix_emb, suffix_mask, suffix_ar)` → `(prefix_out, suffix_out)`: 训练用, prefix 和 suffix 一次前向 (`pi0.py` L202-L211). 完整序列 867 = 816 + 51, mask bool[B, 867, 867], `positions = cumsum(input_mask) − 1`.
-- `suffix_forward(llm, kv_cache, prefix_mask, suffix_emb, suffix_mask, suffix_ar)` → `suffix_out`: 推理用, prefix 已缓存, 只算 51 个 suffix token (`pi0.py` L239-L269). mask bool[B, 51, 867]: 左半 816 列 = `prefix_mask` 广播 (suffix 能看所有有效 prefix), 右半 51 列 = `make_attn_mask(suffix_mask, suffix_ar)`; `positions = sum(prefix_mask) + cumsum(suffix_mask) − 1`.
+- `suffix_forward(llm, kv_cache, prefix_mask, suffix_emb, suffix_mask, suffix_ar)` → `suffix_out`: prefix 已缓存, 只算 51 个 suffix token (`pi0.py` L239-L269). mask bool[B, 51, 867]: 左半 816 列 = `prefix_mask` 广播 (suffix 能看所有有效 prefix), 右半 51 列 = `make_attn_mask(suffix_mask, suffix_ar)`; `positions = sum(prefix_mask) + cumsum(suffix_mask) − 1`.
 
-两条路径对 suffix 给出完全相同的输出, `test_parity.py` 有断言.
+训练时 prefix 和 suffix 一次前向 (`pi0.py` L202-L211): 完整序列 867 = 816 + 51, `xs = [prefix, suffix]`, mask bool[B, 867, 867], `positions = cumsum(input_mask) − 1`. 这条路径的代码放在 `train.py` (第 4.1 节); `test_parity.py` 里内联搭了一遍, 断言它与 `suffix_forward` 对 suffix 给出完全相同的输出.
 
 常量: action expert = Gemma 300M {width 1024, depth 18, mlp 4096, heads 8, kv heads 1, head_dim 256}, 无词表嵌入 (`gemma.py` L69-L78); `action_dim 32`, `action_horizon 50` (`pi0_config.py` L25-L26); 时间步嵌入 `posemb_sincos(τ, 1024, min_period 4e-3, max_period 4.0)` (`pi0.py` L161).
 
@@ -92,7 +91,7 @@ W1 ∈ R^{w×d} 是 `action_in_proj`, φ 是 `posemb_sincos`, W2 ∈ R^{w×2w} �
 3. 10 步去噪, 每步 `embed_suffix` 出 51 个 token, `MoEGemma` 以 `xs = [None, suffix]` 跑: 只有 expert 1 在场, query 51 个, key 是 cache 的 816 个加本步的 51 个. 这是本 module 的工作; 10 步合计 27 ms.
 4. 最后 50 个 token 过 `action_out_proj` 得到速度场, Euler 更新 (→ `../flow_matching`).
 
-训练时没有 cache, `xs = [prefix, suffix]` 一次前向 867 个 token, 两个 expert 同时在场, 梯度同时流回两套权重 (openpi 默认不冻结 Gemma 2B, → `../train`).
+训练时没有 cache, `xs = [prefix, suffix]` 一次前向 867 个 token, 两个 expert 同时在场, 梯度同时流回两套权重 (openpi 默认不冻结 Gemma 2B; 代码在本 module `train.py`, 冻结策略 → `../train`).
 
 一句话: `../vlm` 提供 "看和读" 的那套权重和它产生的 k / v, 本 module 提供 "动" 的那套权重; 两者是同一个 transformer 里并排的两条通道, 只通过 attention 单向地让 action 看观测.
 
@@ -137,7 +136,7 @@ state, noisy_actions, τ
 | state / action / timestep 的嵌入 (五个线性层 + swish MLP + sincos) | π0.5 的 adaRMSNorm 与离散 state (第 1.2, 1.3 节) |
 | 双 expert 的 Gemma block: 各自 norm / 投影 / MLP, 共享一次 attention | LoRA 变体 `gemma_300m_lora` (`gemma.py` L98-L108, rank 32) |
 | suffix 的 `ar_mask` 与三块 mask | bfloat16 / 分片 |
-| 训练式 joint forward 与推理式带 cache 的 suffix forward | 时间步采样, loss, Euler 积分 (→ `../flow_matching`) |
+| 推理式带 cache 的 suffix forward | 时间步采样, loss, Euler 积分 (→ `../flow_matching`); 训练式 joint forward (→ 本 module `train.py`, 后加) |
 | 速度场解码 `action_out_proj` | 权重加载 |
 | `tiny` 配置整条前向 | |
 
@@ -165,7 +164,7 @@ state, noisy_actions, τ
 
 ### 4.1 训练时怎么用
 
-- 一次前向同时喂 prefix 和 suffix (`joint_forward`), 序列长 867, 一张 [B, 867, 867] 的 mask; 输出只用 suffix 的后 50 个 token (`pi0.py` L202-L214).
+- 一次前向同时喂 prefix 和 suffix (`xs = [prefix, suffix]`), 序列长 867, 一张 [B, 867, 867] 的 mask; 输出只用 suffix 的后 50 个 token (`pi0.py` L202-L214). 这段代码属于训练, 放在本 module 的 `train.py` (后加), `model.py` 只有推理路径 (仓库约定).
 - action expert 的 18 层与五个投影层全部从零初始化 (论文 Sec. III "300M parameters for the action expert (which is initialized from scratch)"); openpi 里 expert 1 的参数名带 `_1` 后缀, 所以 PaliGemma checkpoint 里没有同名项, 加载时保持随机 (`gemma.py` L443-L451 `_name`).
 - 初始化: openpi 的 `nnx.Linear` 默认 lecun_normal 权重 + 零 bias; einsum 投影 lecun_normal; RMSNorm scale 零初始化 (输出 `x · (1 + 0)`). 本仓库同.
 - 输入: `state` 是 `../data` 归一化后的 32 维; `noisy_actions` 由 `../flow_matching` 按 `x_t = t · noise + (1 − t) · actions` 生成; `timestep` 是 Beta(1.5, 1) · 0.999 + 0.001 (`pi0.py` L197). 这里只接收, 不采样.
@@ -191,7 +190,7 @@ state, noisy_actions, τ
 - `embed_suffix` 的 shape 与 `ar_mask` 恰为 `[1, 1, 0 × 49]`; 拼接后 867 长的 mask 满足三块结构 (prefix 行看不到 suffix 列, state 行看 prefix + 自己, action 行全看);
 - `posemb_sincos` 在 τ = 0 时 sin 全 0, cos 全 1; 不同 τ 给出不同的 action token;
 - 语义检查 1: `MoEGemma` 只跑 expert 0 时与 `../vlm` 的单 expert `Gemma` 输出逐元素相等 (拷贝同一套权重), 说明双 expert 结构是单 expert 的严格推广;
-- 语义检查 2: `joint_forward` 和 "prefix 缓存 + `suffix_forward`" 对 suffix 输出相等 (含一个被 mask 的相机), 说明推理路径的 mask 与位置编号和训练路径一致.
+- 语义检查 2: 测试里内联搭的 867 token 一次前向和 "prefix 缓存 + `suffix_forward`" 对 suffix 输出相等 (含一个被 mask 的相机), 说明推理路径的 mask 与位置编号和训练路径一致.
 
 ```
 uv run pytest pi/pi0/action_expert -q
@@ -228,7 +227,6 @@ uv run python -m pi.pi0.action_expert.model
 | `ActionProjections.decode` | `pi0.py` L212, L269 |
 | `MoEBlock` | `gemma.py` L284-L333 (`Block`), attention 部分 L158-L249 (`Attention`) |
 | `MoEGemma` | `gemma.py` L340-L411 (`Module`), `final_norms` L382, `_name` L443-L451 |
-| `joint_forward` | `pi0.py` L202-L211 (`compute_loss` 的前向部分) |
 | `suffix_forward` | `pi0.py` L239-L269 (`sample_actions.step`) |
 | head 配置一致性断言 | `gemma.py` L165-L168 |
 | 论文 | π0 Sec. III (attention, 输出), Appendix B (投影, 时间步 MLP, mask, expert 尺寸), Appendix C (π0-small 用 AdaLN-Zero), Appendix D 与 Table I (推理) |
