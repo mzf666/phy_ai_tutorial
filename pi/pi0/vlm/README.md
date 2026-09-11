@@ -95,20 +95,52 @@ act1   块2    1    1   1    1    1    1
 
 全部在 `../data`. 本 module 只要求图像已是 [−1, 1] 的 224×224, 指令已是 48 个 token id.
 
-### 4.3 背景事实: PaliGemma 的预训练 recipe (只陈述, 不复现)
+### 4.3 背景事实: 三个预训练 (只陈述, 不复现)
 
-| 项目 | 值 | 来源 |
+π0 拿到的 backbone 经历了三次预训练: SigLIP 单独训图像塔, Gemma 2B 单独训语言模型, PaliGemma 把两者接起来再训. 每一层都写清 **任务 (loss)**, **数据组织形式**, **规模**.
+
+**(a) SigLIP So400m: 图文对比预训练** ([arXiv:2303.15343v4](https://arxiv.org/abs/2303.15343v4))
+
+| 项目 | 内容 | 来源 |
 |---|---|---|
-| 图像编码器 | SigLIP "shape optimized" ViT-So400m, sigmoid 对比损失预训练 | PaliGemma Sec. 3.1 |
-| 语言模型 | Gemma-2B v1.0 原始预训练 checkpoint | PaliGemma Sec. 3.1 |
-| 连接方式 | 一个零初始化的线性层把 SigLIP token 投影到 Gemma 宽度; 试过 MLP 无明显收益 | PaliGemma Sec. 3.1 |
-| 序列格式 | `[image tokens..., BOS, prefix tokens..., SEP, suffix tokens..., EOS, PAD...]`; 图像与 prefix 全双向, suffix 自回归 (prefix-LM) | PaliGemma Sec. 3.1, Fig. 2 |
-| Stage 0 | 单模态预训练, 直接用公开 checkpoint | PaliGemma Sec. 3.2.1 |
-| Stage 1 | 多模态预训练, 224 px, N_img = 256, N_txt = 128, 10 亿样本, 不冻结任何部分, 约 350B token | PaliGemma Sec. 3.2.2, Sec. 3.4 |
-| Stage 2 | 分辨率提升到 448 / 896 (π0 用的是 224 checkpoint, 未经此阶段) | PaliGemma Sec. 3.2.3 |
-| 算力 | TPUv5e-256, Stage 1 略少于 3 天, 每个 Stage 2 15 小时; MFU 55% | PaliGemma Sec. 3.4 |
-| 精度 | 参数与优化器状态 float32; 推理 bfloat16 验证无损 | PaliGemma Sec. 3.4 |
-| Gemma 2B 预训练 | 3T token, TPUv5e | Gemma Sec. 3, Sec. 4 |
+| 任务 | 图文对比学习. 每个 mini-batch 里 \|B\| 张图配 \|B\| 段文本, 匹配的 (I_i, T_i) 为正样本, 其余所有 (I_i, T_j≠i) 为负样本 | SigLIP Sec. 3 |
+| loss | pairwise sigmoid, 不做 softmax 归一化, 把问题变成 \|B\|² 个独立的二分类: `logits = t · x yᵀ + b`, `labels = 2I − 1`, `L = −Σ log σ(labels · logits) / \|B\|`. x, y 是 L2 归一化后的图像 / 文本嵌入; 温度 t 与偏置 b 可学习, 初值 log 10 与 −10, 以抵消负样本远多于正样本的失衡 | SigLIP Sec. 3.2, Algorithm 1 |
+| 为什么不用 softmax | 不需要跨设备 gather 全局归一化项, 内存省, batch 能开大; 小 batch (< 16k) 下也更好; 32k 之后收益饱和 | SigLIP Sec. 1, Sec. 4.2 |
+| 数据组织 | WebLI 图文对, 仅英文; 图像 resize 到 224×224 (So400m 训练用 256 个 patch, 即 224/14 网格); 文本用 32k 词表的 sentencepiece, So400m 保留 64 个 token | SigLIP Sec. 4.1, Sec. 4.6 |
+| 图像塔 / 文本塔 | ViT-So400m/14 与同尺寸的文本 Transformer | SigLIP Sec. 4.6 |
+| 规模 | batch 32k, 400 亿样本; 再以 100 倍小的学习率、无 weight decay 在目标分辨率上多训 50 亿样本 | SigLIP Sec. 4.6 |
+| 与 PaliGemma 的关系 | PaliGemma 只取图像塔, 丢掉文本塔; 论文引用的即此 "shape optimized" So400m | PaliGemma Sec. 3.1 |
+
+**(b) Gemma 2B: 自回归语言模型预训练** ([arXiv:2403.08295v4](https://arxiv.org/abs/2403.08295v4))
+
+| 项目 | 内容 | 来源 |
+|---|---|---|
+| 任务 | 标准 decoder-only 下一 token 预测, 因果 mask, 上下文 8192 | Gemma Sec. 2 |
+| 数据组织 | 3T token, 以英文为主的网页文档、数学、代码. 不是多模态, 也未针对多语言优化 | Gemma Sec. 3 "Training Data" |
+| 分词 | Gemini 的 SentencePiece 子集, 256k 词表; 切分数字, 不去多余空白, 未知 token 走 byte 级 | Gemma Sec. 3 |
+| 过滤 | 启发式 + 模型分类器去除有害 / 低质内容与个人信息; 从预训练集中剔除所有评测集, 做污染分析 | Gemma Sec. 3 "Filtering" |
+| 混合调度 | 训练分阶段改变语料混合, 末期提高高质量数据权重; 混合比例由 2B / 7B 上的消融决定 | Gemma Sec. 3 |
+| 算力 | 512 个 TPUv5e (2 个 pod), 256 路数据并行, 优化器状态 ZeRO-3 式分片 | Gemma Sec. 3 "Training Infrastructure" |
+| π0 用的版本 | PaliGemma 用 Gemma-2B v1.0 原始预训练 checkpoint, 不是指令微调版 | PaliGemma Sec. 3.1 |
+
+**(c) PaliGemma: 多模态预训练** ([arXiv:2407.07726v2](https://arxiv.org/abs/2407.07726v2))
+
+| 项目 | 内容 | 来源 |
+|---|---|---|
+| 连接方式 | 零初始化线性层把 SigLIP token 投到 Gemma 宽度; 试过 MLP 无收益 | PaliGemma Sec. 3.1 |
+| 序列格式 | `[image tokens..., BOS, prefix tokens..., SEP, suffix tokens..., EOS, PAD...]`; 图像 + prefix 全双向, suffix 自回归 (prefix-LM). π0 的 `make_attn_mask` 就是这套 mask 的实现 | PaliGemma Sec. 3.1, Fig. 2 |
+| 任务 (loss) | 只在 suffix 上算下一 token 预测 loss; 每个任务用唯一的文本前缀区分, 避免不同技能的信号冲突 | PaliGemma Sec. 3.1, Sec. 3.2.5 |
+| 任务混合 | `caption {lang}`: WebLI 100+ 种语言与 CC3M-35L 的图像描述; `ocr`: 图上文字按阅读顺序拼接; `answer en {question}`: CC3M-35L 生成的 VQA 与 OpenImages 上的物体列举 / 存在 / 计数问答; `question {lang} {answer}`: 给答案生成问题; `detect {thing}; ...`: Pix2Seq 式多目标检测, 坐标离散为 1024 个 `<loc>` token; `segment {thing}; ...`: 实例分割, 128 个 `<seg>` token; `caption <ymin><xmin><ymax><xmax>`: 框内 grounded caption. 检测 / 分割数据由 OWL-ViTv2 与 SAM 伪标注 | PaliGemma Sec. 3.2.5 |
+| 数据组织 | 一条样本 = 一张图 + 一段带任务前缀的文本 (prefix) + 目标文本 (suffix); Stage 1 为 224 px, N_img = 256, N_txt = 128 | PaliGemma Sec. 3.2.2 |
+| 数据来源声明 | 没有任何任务的输出来自更大的商业 VLM (区别于 LLaVA 用 GPT-4 生成数据); 从预训练集中移除所有与下游评测集近重复的图像; 部分数据集不公开 | PaliGemma Sec. 3.2.5, Sec. 3.2.6 |
+| Stage 0 | 单模态, 直接用 (a) (b) 的公开 checkpoint | PaliGemma Sec. 3.2.1 |
+| Stage 1 | 224 px, 10 亿样本, **不冻结**图像编码器 (与 PaLI 惯例不同, 理由是 caption 等任务能给图像塔补上空间关系信号); 图像塔学习率先慢速 warm-up 以免被早期错位梯度破坏 | PaliGemma Sec. 3.2.2 |
+| Stage 2 | 448 px 再 5000 万样本, 896 px 再 1000 万样本, 任务混合相同但上调高分辨率任务. π0 用的 224 checkpoint 未经此阶段 | PaliGemma Sec. 3.2.3 |
+| 学习率 | 各阶段串成一条 rsqrt 的 "无限" 调度, 阶段间不衰减 | PaliGemma Sec. 3.2.6 |
+| 算力与精度 | TPUv5e-256, Stage 1 略少于 3 天 (约 350B token), 每个 Stage 2 15 小时; MFU 55%, 5189 token/s/设备; 参数与优化器状态 float32, 推理 bfloat16 无损 | PaliGemma Sec. 3.4 |
+| 图像预处理 | 预训练时随机化 resize 方法、JPEG 编码, 加很轻的 inception crop, 以免对框架差异敏感 | PaliGemma Sec. 3.4 |
+
+π0 从 (c) 的 Stage 1 224 px checkpoint 出发 (`pt_224.npz`), 然后用机器人数据继续训练整个 backbone 加 action expert; 见 `../train`.
 
 ## 5. 评测
 
