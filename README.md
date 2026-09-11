@@ -121,6 +121,8 @@
 
 倾向单文件可读: 一个文件能从上读到下, 不需要跳转.
 
+主文件 (`model.py`, 或 `data.py` 这类没有模型的 module) 必须带一个 `main()` 与 `if __name__ == "__main__"`: 用 `tiny` 配置走一遍完整前向, 逐步打印每个中间张量的 shape 和关键标量, 让读者不看测试也能看到一次 forward 是怎么走的. 运行方式写在 README 第 5 节.
+
 
 ## Module README 模板
 
