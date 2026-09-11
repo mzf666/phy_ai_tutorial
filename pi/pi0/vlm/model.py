@@ -263,7 +263,7 @@ def make_attn_mask(input_mask: torch.Tensor, mask_ar: torch.Tensor) -> torch.Ten
     Logic: cumsum(mask_ar) assigns every token a block id; blocks are causal w.r.t. each other, tokens inside a
     block are bidirectional. Worked example with 6 tokens [img0 img1 txt | state | act0 act1]:
         mask_ar = [0 0 0 1 1 0]  ->  block id = [0 0 0 1 2 2]
-        query\key   img0 img1 txt state act0 act1
+        query / key  img0 img1 txt state act0 act1
         img0  (b0)    1    1    1    0    0    0
         img1  (b0)    1    1    1    0    0    0
         txt   (b0)    1    1    1    0    0    0
