@@ -96,6 +96,12 @@
 uv run pytest pi/pi0/vlm -q
 ```
 
+看一次前向怎么走 (tiny 配置, 逐步打印 shape):
+
+```
+uv run python -m pi.pi0.vlm.model
+```
+
 ## 6. cost 信息
 
 | 项目 | 值 | 来源 |

@@ -300,3 +300,69 @@ class PaliGemma(nn.Module):
         mask = make_attn_mask(input_mask, ar_mask)
         positions = input_mask.long().cumsum(1) - 1  # padded tokens consume no positions (pi0.py L208)
         return self.llm(emb, positions, mask)
+
+
+# ======================================================================================
+# 5. Walk one prefix forward with the tiny config and print every intermediate shape.
+#    uv run python -m pi.pi0.vlm.model
+# ======================================================================================
+def main():
+    torch.manual_seed(0)
+    B = 2
+    vit_cfg, gemma_cfg = tiny_vit(), tiny_gemma()
+    pg = PaliGemma(vit_cfg, gemma_cfg).eval()
+    print(f"tiny configs: vit={vit_cfg}\n              gemma={gemma_cfg}")
+    print(f"params: SigLIP {sum(p.numel() for p in pg.img.parameters()):,}  Gemma {sum(p.numel() for p in pg.llm.parameters()):,}")
+
+    # --- inputs: what ../data produces (no state here; state goes to the action expert) ---
+    images = {k: torch.rand(B, 224, 224, 3) * 2 - 1 for k in IMAGE_KEYS}
+    image_masks = {k: torch.ones(B, dtype=torch.bool) for k in IMAGE_KEYS}
+    image_masks["right_wrist_0_rgb"][:] = False  # pretend this robot has no right wrist camera
+    tokens = torch.randint(3, gemma_cfg.vocab_size, (B, 48))
+    token_mask = torch.zeros(B, 48, dtype=torch.bool)
+    token_mask[:, :9] = True  # a 9-token prompt, rest is padding
+    print("\n[input]  images x3 f32", tuple(images["base_0_rgb"].shape), " image_masks bool", tuple(image_masks["base_0_rgb"].shape),
+          " tokens i64", tuple(tokens.shape), " token_mask", tuple(token_mask.shape))
+
+    with torch.no_grad():
+        # --- 1. SigLIP, one camera at a time (shared weights) ---
+        x = pg.img.embedding(images["base_0_rgb"].permute(0, 3, 1, 2))
+        print("[siglip] patch conv           ", tuple(x.shape), " = [B, width, 16, 16]")
+        x = x.flatten(2).transpose(1, 2) + pg.img.pos_embedding
+        print("[siglip] tokens + pos_embedding", tuple(x.shape), " = [B, 256, width]")
+        for blk in pg.img.encoderblock:
+            x = blk(x)
+        x = pg.img.head(pg.img.encoder_norm(x))
+        print("[siglip] after blocks/norm/head", tuple(x.shape), " = [B, 256, gemma width]")
+
+        # --- 2. prefix assembly ---
+        emb, input_mask, ar_mask = pg.embed_prefix(images, image_masks, tokens, token_mask)
+        print("[prefix] emb", tuple(emb.shape), " input_mask", tuple(input_mask.shape), " ar_mask", tuple(ar_mask.shape))
+        print(f"[prefix] valid tokens per sample: {int(input_mask[0].sum())} of {input_mask.shape[1]} "
+              f"(2 cameras x 256 + 9 prompt); ar_mask any? {bool(ar_mask.any())}")
+        mask = make_attn_mask(input_mask, ar_mask)
+        positions = input_mask.long().cumsum(1) - 1
+        print("[prefix] attn mask", tuple(mask.shape), f" fraction attendable {mask[0].float().mean():.3f}")
+        print("[prefix] positions of first prompt token / last valid token:",
+              int(positions[0, 768]), "/", int(positions[0, input_mask[0].nonzero().max()]))
+
+        # --- 3. Gemma layer by layer ---
+        h = emb
+        kv_cache = []
+        for i, layer in enumerate(pg.llm.layers):
+            h, kv = layer(h, positions, mask)
+            kv_cache.append(kv)
+            if i == 0:
+                print("[gemma]  layer 0 out", tuple(h.shape), " k/v cache", tuple(kv[0].shape), " = [B, S, kv_heads, head_dim]")
+        h = pg.llm.final_norm(h)
+        print(f"[gemma]  after {len(pg.llm.layers)} layers + final_norm", tuple(h.shape))
+
+        # --- 4. same thing through the public entry point ---
+        hidden, cache = pg(images, image_masks, tokens, token_mask)
+        assert torch.allclose(hidden, h) and len(cache) == gemma_cfg.depth
+    print("[output] hidden", tuple(hidden.shape), " kv_cache: list of", len(cache), "x (k, v)", tuple(cache[0][0].shape))
+    print("\nthe action expert will attend into this kv_cache; see ../action_expert")
+
+
+if __name__ == "__main__":
+    main()
