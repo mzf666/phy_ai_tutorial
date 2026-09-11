@@ -324,6 +324,10 @@ def main():
     print("\n[input]  images x3 f32", tuple(images["base_0_rgb"].shape), " image_masks bool", tuple(image_masks["base_0_rgb"].shape),
           " tokens i64", tuple(tokens.shape), " token_mask", tuple(token_mask.shape))
 
+    # Steps 1-3 below are PaliGemma.forward unrolled by hand, so every intermediate tensor can be printed:
+    #   1 = SigLIP.forward (one camera), 2 = the first three lines of PaliGemma.forward, 3 = Gemma.forward.
+    # Step 4 calls the real PaliGemma.forward and asserts it gives the same tensor as the unrolled walk.
+    # torch.no_grad() only stops autograd from recording a graph (no backward here); it changes no math.
     with torch.no_grad():
         # --- 1. SigLIP, one camera at a time (shared weights) ---
         x = pg.img.embedding(images["base_0_rgb"].permute(0, 3, 1, 2))
