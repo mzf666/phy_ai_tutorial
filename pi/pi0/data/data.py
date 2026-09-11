@@ -67,6 +67,22 @@ class Observation:
 # 2. Images: resize without distortion, pad with black.
 #    openpi@215abfb src/openpi/shared/image_tools.py L13-L54 (resize_with_pad, JAX) and
 #    L57-L126 (resize_with_pad_torch). Semantics of tf.image.resize_with_pad.
+#
+#    Why pad instead of stretch or crop. The only stated upstream motive is "without distortion"
+#    (image_tools.py L20-L21); the paper does not discuss it. The reasoning below is ours.
+#    SigLIP So400m/14 has position embeddings learned on a 16x16 patch grid of a 224x224 square,
+#    so every camera frame (4:3 or 16:9 on real robots) must become square. Three options:
+#      * stretch: geometry is distorted (circles -> ellipses), and each camera distorts differently,
+#        so the model would have to learn a per-camera warp on top of the task;
+#      * centre crop: geometry kept, but ~1/4 of the field of view is thrown away, and in manipulation
+#        the gripper, the object, or the second arm is often exactly at the frame edge;
+#      * resize + pad (chosen): geometry and field of view kept; the price is resolution, a 4:3 frame
+#        uses only 224x168 of the 224x224 pixels, i.e. ~1/4 of the image tokens look at black bars.
+#    Padding also makes all 7 robot configurations look geometrically identical to the model, which
+#    matters for cross-embodiment training. Black (0 / -1.0) is a constant, easy-to-ignore signal;
+#    reflection or mean padding would hallucinate content. Inference MUST apply the same transform,
+#    since norm stats, augmentation and the learned "this is a border" cue all assume it; openpi
+#    re-checks the shape inside the model and pads again if needed (model.py L164-L166).
 # --------------------------------------------------------------------------------------
 def resize_with_pad(images: torch.Tensor, height: int, width: int) -> torch.Tensor:
     """uint8[*B, h, w, c] in [0,255] or float32 in [-1,1]  ->  same dtype [*B, height, width, c].

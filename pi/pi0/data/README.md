@@ -67,6 +67,9 @@
 | (b) delta action | 关节维: a_{t'} − q_t (整段 chunk 都减当前状态, 不是减前一个动作); 夹爪维保持绝对值 | mask 由 `make_bool_mask` 生成, ALOHA 为 (6, −1, 6, −1); DROID 为 (7, −1) | `transforms.py` L204-L223, L433-L450; `training/config.py` L264, L405 |
 | (c) 归一化 | state 与 actions 逐维 z-score: (x − mean)/(std + 1e-6). 统计量按数据集算, 随 checkpoint 一起发布为 `norm_stats.json` | π0 用 z-score; π0.5 与 π0-FAST 才用 1%/99% 分位数 | `transforms.py` L137-L139; `training/config.py` L187 |
 | (d) 图像缩放 | 长边缩到 224, 双线性, 短边两侧对称填黑 (uint8 填 0, float 填 −1). 不裁剪, 不拉伸 | 640×480 → 内容 224×168, 上下各 28 行黑边 | `shared/image_tools.py` L13-L54 |
+
+为什么填黑而不是拉伸或裁剪: 上游只说了 "without distortion" (`image_tools.py` L20-L21), 论文未讨论, 以下是本仓库的推断. SigLIP 的位置嵌入是按 224×224 的 16×16 patch 网格学的, 相机帧 (4:3 或 16:9) 必须先变成正方形. 拉伸会破坏几何且每台相机形变不同; 中心裁剪丢掉约四分之一视野, 而操作任务里夹爪、物体、另一只手臂常在画面边缘; 等比缩放加填黑保住几何和视野, 代价是 4:3 的图只用 224×168 的有效像素, 约四分之一的 token 在看黑边. 填黑还让七种机器人的相机在模型眼里几何一致, 利于跨本体训练. 推理时必须用同一变换, 归一化统计量、增广和模型学到的 "黑边" 线索都建立在它上面 (`model.py` L164-L166 在模型内再检查一次).
+
 | (e) 指令分词 | 清洗: strip, `_`→空格, `\n`→空格. 编码: BOS + sentencepiece(指令) + 单独编码的 `\n` (作为 "开始回答" 标记). 补 0 或截断到 48 | 词表 PaliGemma `paligemma_tokenizer.model`, BOS id 2 | `models/tokenizer.py` L14-L48 |
 | (f) 维度填充 | state 与 actions 末维零填充到 32 | 论文的混合里最大机器人是 18 维, 发布版用 32 | `transforms.py` L328-L337; 论文 Sec. V-A |
 | (g) 模型内 | uint8 → float /255·2−1. 训练时增广: 非腕部相机 RandomCrop 95% → 缩回 → 旋转 ±5°; 所有相机 ColorJitter(brightness 0.3, contrast 0.4, saturation 0.5) | 增广库是 augmax 0.4.1, 语义见下 | `models/model.py` L118, L169-L188; openpi `uv.lock` L203-L204 |
