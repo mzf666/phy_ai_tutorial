@@ -6,7 +6,8 @@ Minimal PyTorch re-implementation of openpi's JAX code. Source of truth:
   paper   pi0 arXiv:2410.24164v1 Sec. III, Appendix B, Appendix D
 Upstream license: Apache-2.0 (openpi, big_vision). This file re-implements, it does not copy.
 
-What this module covers: (state, noisy_actions, timestep) -> 51 suffix tokens in the expert width; a Gemma stack where
+What this module covers: (state, noisy_actions, timestep) -> 51 suffix tokens in the expert width (ActionProjections,
+used once at entry and once at exit); a Gemma stack where
 every layer holds one set of weights per expert and the experts meet only inside attention; the training-style joint
 forward over prefix + suffix and the inference-style suffix forward against a prefix KV cache; decoding the last 50
 tokens to the velocity field. Timestep sampling, the loss and the Euler loop live in ../flow_matching.
@@ -140,8 +141,18 @@ class MoEGemma(nn.Module):
 
 # ======================================================================================
 # 3. The robotics-specific projections and the suffix. openpi@215abfb pi0.py L92-L100, L140-L186, L212.
+#    These five Linear layers are NOT the action expert. They sit outside the transformer: four of them run once
+#    at the entry (32-dim state / actions / scalar tau -> 51 tokens of width 1024, before layer 0) and one runs once
+#    at the exit (last 50 tokens after layer 17 -> 32-dim velocity). In openpi they hang off the Pi0 object, not off
+#    the llm (pi0.py L92-L100). The action expert proper, Gemma 300M, lives in every layer as
+#    MoEGemma.layers[i].experts[1], i = 0..17, and the suffix tokens go through it 18 times. Paper Appendix B lists
+#    the two as separate additions: "(1) additional input and output projections ... (3) a second, smaller set of
+#    weights for the action expert". See README Sec. 1.6.
 # ======================================================================================
-class ActionExpert(nn.Module):
+class ActionProjections(nn.Module):
+    """state_proj, action_in_proj, action_time_mlp_in/out (entry) and action_out_proj (exit). 3,248,160 params at
+    paper size; the 311M-parameter expert itself is in MoEGemma."""
+
     def __init__(self, cfg: GemmaConfig = GEMMA_300M, action_dim: int = ACTION_DIM, action_horizon: int = ACTION_HORIZON):
         super().__init__()
         w = cfg.width
@@ -222,11 +233,11 @@ def main():
     # the two pieces visible. See README Sec. 1.4 for the vlm / action_expert relationship.
     pg = PaliGemma(tiny_vit(), vlm_cfg).eval()
     llm = MoEGemma((vlm_cfg, exp_cfg)).eval()
-    expert = ActionExpert(exp_cfg).eval()
+    expert = ActionProjections(exp_cfg).eval()
     n = lambda m: sum(p.numel() for p in m.parameters())
     print(f"tiny configs: vlm expert={vlm_cfg}\n              action expert={exp_cfg}")
     print(f"params: MoEGemma expert0 {sum(n(l.experts[0]) for l in llm.layers):,}  expert1 {sum(n(l.experts[1]) for l in llm.layers):,}"
-          f"  ActionExpert projections {n(expert):,}")
+          f"  ActionProjections projections {n(expert):,}")
 
     # --- inputs: what ../data produces. state is consumed HERE, not by the VLM ---
     images = {k: torch.rand(B, 224, 224, 3) * 2 - 1 for k in IMAGE_KEYS}
@@ -241,7 +252,7 @@ def main():
     print("\n[input]  state f32", tuple(state.shape), " noisy_actions f32", tuple(noisy_actions.shape), " timestep f32", tuple(timestep.shape))
 
     with torch.no_grad():
-        # --- 1. suffix embedding, step by step (ActionExpert.embed_suffix unrolled) ---
+        # --- 1. suffix embedding, step by step (ActionProjections.embed_suffix unrolled) ---
         st = expert.state_proj(state)[:, None, :]
         print("[suffix] state_proj(state)          ", tuple(st.shape), " = [B, 1, w]")
         at_ = expert.action_in_proj(noisy_actions)

@@ -46,7 +46,7 @@ def test_action_expert_gemma_300m_param_count():
 
 def test_projection_param_count_and_total():
     with torch.device("meta"):
-        ae = M.ActionExpert()
+        ae = M.ActionProjections()
     w, d = 1024, 32
     assert n_params(ae.state_proj) == d * w + w == 33_792
     assert n_params(ae.action_in_proj) == 33_792
@@ -61,7 +61,7 @@ def test_projection_param_count_and_total():
 # ---------------------------------------------------------------- suffix contract
 def test_embed_suffix_shapes_and_ar_mask():
     cfg = M.tiny_expert()
-    ae = M.ActionExpert(cfg)
+    ae = M.ActionProjections(cfg)
     tokens, input_mask, ar = ae.embed_suffix(torch.randn(B, 32), torch.randn(B, 50, 32), torch.rand(B))
     assert tokens.shape == (B, S, cfg.width)
     assert input_mask.shape == (B, S) and input_mask.all()
@@ -78,7 +78,7 @@ def test_posemb_sincos():
 
 
 def test_timestep_changes_action_tokens_not_state_token():
-    ae = M.ActionExpert(M.tiny_expert())
+    ae = M.ActionProjections(M.tiny_expert())
     st, act = torch.randn(B, 32), torch.randn(B, 50, 32)
     t1, _, _ = ae.embed_suffix(st, act, torch.full((B,), 0.2))
     t2, _, _ = ae.embed_suffix(st, act, torch.full((B,), 0.8))
@@ -89,7 +89,7 @@ def test_timestep_changes_action_tokens_not_state_token():
 def test_full_mask_has_three_blocks():
     """Appendix B: [images, prompt] | [state] | [actions]; blocks causal, bidirectional inside."""
     prefix_ar = torch.zeros(P, dtype=torch.bool)
-    _, _, suffix_ar = M.ActionExpert(M.tiny_expert()).embed_suffix(torch.zeros(1, 32), torch.zeros(1, 50, 32), torch.zeros(1))
+    _, _, suffix_ar = M.ActionProjections(M.tiny_expert()).embed_suffix(torch.zeros(1, 32), torch.zeros(1, 50, 32), torch.zeros(1))
     ar = torch.cat([prefix_ar, suffix_ar])
     m = M.make_attn_mask(torch.ones(1, P + S, dtype=torch.bool), ar)[0]
     assert m[:P, :P].all() and not m[:P, P:].any()  # prefix sees only prefix
@@ -122,7 +122,7 @@ def test_cached_suffix_forward_equals_joint_forward():
     torch.manual_seed(0)
     vlm_cfg, exp_cfg = M.tiny_experts()
     llm = M.MoEGemma((vlm_cfg, exp_cfg)).eval()
-    ae = M.ActionExpert(exp_cfg).eval()
+    ae = M.ActionProjections(exp_cfg).eval()
     prefix_emb = torch.randn(B, P, vlm_cfg.width)
     prefix_mask = torch.ones(B, P, dtype=torch.bool)
     prefix_mask[:, 512:768] = False  # right wrist camera missing

@@ -35,7 +35,7 @@ def arrow(x0, y0, x1, y1, label=None, dx=0.08, dy=0.0):
 
 
 # ================= left column: suffix embedding (pi0.py L140-L186) =================
-ax.text(2.6, 8.3, "suffix embedding  (ActionExpert.embed_suffix)", ha="center", fontsize=11, weight="bold")
+ax.text(2.6, 8.3, "suffix embedding  (ActionProjections.embed_suffix)", ha="center", fontsize=11, weight="bold")
 box(0.3, 7.1, 2.1, 0.8, "state q_t", "f32[B,32]  (../data)", fc=BLUE)
 box(2.75, 7.1, 2.3, 0.8, "noisy actions A_t^tau", "f32[B,50,32]", fc=BLUE)
 box(0.3, 5.75, 2.1, 0.8, "state_proj", "Linear 32->1024 (+bias)")

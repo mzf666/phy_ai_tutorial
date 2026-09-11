@@ -8,7 +8,7 @@
 
 ## 1. I/O 契约
 
-**`ActionExpert(cfg).embed_suffix(state, noisy_actions, timestep)`** (`pi0.py` L140-L186)
+**`ActionProjections(cfg).embed_suffix(state, noisy_actions, timestep)`** (`pi0.py` L140-L186; 这个类只是入口 / 出口的五个线性层, expert 本身在 `MoEGemma` 里, 见第 1.6 节)
 
 | 名称 | shape / dtype | 取值 | 说明 |
 |---|---|---|---|
@@ -19,7 +19,7 @@
 | 出 `input_mask` | bool[B, 51] | 全 True | suffix 没有 padding |
 | 出 `ar_mask` | bool[51] | `[1, 1, 0 × 49]` | state 开一个块, 第一个 action 再开一个块, 其余 action 同块 |
 
-**`ActionExpert(cfg).decode(suffix_out)`**: float32[B, 51, 1024] → float32[B, 50, 32]. 只取最后 50 个 token 过 `action_out_proj` (`pi0.py` L212), 得到速度场 v_θ; state token 的输出被丢弃.
+**`ActionProjections(cfg).decode(suffix_out)`**: float32[B, 51, 1024] → float32[B, 50, 32]. 只取最后 50 个 token 过 `action_out_proj` (`pi0.py` L212), 得到速度场 v_θ; state token 的输出被丢弃.
 
 **`MoEGemma(cfgs)(xs, positions, mask, kv_cache=None)`** (`gemma.py` L340-L411): 双 expert 的 Gemma 主干.
 
@@ -107,6 +107,28 @@ W1 ∈ R^{w×d} 是 `action_in_proj`, φ 是 `posemb_sincos`, W2 ∈ R^{w×2w} �
 | 动机 | 固定算力下扩参数量, 每个 token 只激活一小部分 | 让预训练的 VLM 权重和从零训练的动作权重不互相污染, 同时让 action 通过 attention 读观测; 顺带可以把 expert 1 做窄以加快 10 步去噪 |
 
 更贴切的类比是 "modality-specific parameters" (如 Transfusion): 同一个序列, 不同模态用不同参数, 只靠 attention 混合. openpi 的 `Module(configs=[...])` 也是按 "每个 expert 一份 config" 组织, 没有 router 字段 (`gemma.py` L340-L343). 本仓库沿用 openpi 的叫法把类命名为 `MoEBlock` / `MoEGemma`, 读的时候按 "mixture of modality-specific weights" 理解.
+
+### 1.6 `ActionProjections` 不是 action expert, 它只在入口和出口各出现一次
+
+论文 Appendix B 把两件事分开列: "(1) additional input and output projections for the robotics-specific tokens" 和 "(3) a second, smaller set of weights for the action expert". 本 module 的两个类分别对应这两件事:
+
+| 类 | 内容 | 出现位置 | 参数量 (paper) |
+|---|---|---|---|
+| `ActionProjections` | `state_proj`, `action_in_proj`, `action_time_mlp_in`, `action_time_mlp_out` (入口); `action_out_proj` (出口) | 第 0 层之前用一次 (`embed_suffix`), 第 17 层之后用一次 (`decode`) | 3,248,160 |
+| `MoEGemma.layers[i].experts[1]`, i = 0..17 | Gemma 300M 每层的 RMSNorm, q / k / v, 输出投影, GeGLU | **每一层都有**, suffix 的 51 个 token 走 18 次 | 311,464,960 |
+
+在 openpi 里这五个投影层挂在 `Pi0` 对象上而不在 `llm` 里 (`pi0.py` L92-L100), expert 的权重在 `llm` 的每一层里 (`gemma.py` L284-L333 的 `_1` 后缀参数). 一次前向的数据流:
+
+```
+state, noisy_actions, τ
+  → ActionProjections.embed_suffix     (四个入口投影, 一次)              f32[B,51,1024]
+  → MoEGemma layer 0   experts[1]      ┐
+  → MoEGemma layer 1   experts[1]      │ 18 层, 每层各一份 expert 1 权重, 每层都 attend 到 prefix 的 k/v
+  → ...                                │
+  → MoEGemma layer 17  experts[1]      ┘
+  → final_norms[1]                                                       f32[B,51,1024]
+  → ActionProjections.decode           (action_out_proj, 一次)           f32[B,50,32]
+```
 
 ## 2. 复现范围
 
@@ -201,9 +223,9 @@ uv run python -m pi.pi0.action_expert.model
 | `GEMMA_300M` (从 `../vlm` 引入) | `openpi@215abfb src/openpi/models/gemma.py` L69-L78 |
 | `tiny_expert` | `gemma.py` L60-L68 "dummy" 变体缩窄 |
 | `posemb_sincos` | `pi0.py` L47-L63 |
-| `ActionExpert.__init__` 五个线性层 | `pi0.py` L92, L97-L100 |
-| `ActionExpert.embed_suffix` | `pi0.py` L140-L186 (`not pi05` 分支) |
-| `ActionExpert.decode` | `pi0.py` L212, L269 |
+| `ActionProjections.__init__` 五个线性层 (挂在 `Pi0` 上, 不在 `llm` 里) | `pi0.py` L92, L97-L100 |
+| `ActionProjections.embed_suffix` | `pi0.py` L140-L186 (`not pi05` 分支) |
+| `ActionProjections.decode` | `pi0.py` L212, L269 |
 | `MoEBlock` | `gemma.py` L284-L333 (`Block`), attention 部分 L158-L249 (`Attention`) |
 | `MoEGemma` | `gemma.py` L340-L411 (`Module`), `final_norms` L382, `_name` L443-L451 |
 | `joint_forward` | `pi0.py` L202-L211 (`compute_loss` 的前向部分) |
