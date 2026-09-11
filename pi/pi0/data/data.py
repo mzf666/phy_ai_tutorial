@@ -427,3 +427,46 @@ def build_batch(
         tokenized_prompt_mask=torch.from_numpy(np.stack(masks)),
     )
     return obs, None if actions is None else torch.from_numpy(actions)
+
+
+# --------------------------------------------------------------------------------------
+# 7. Walk one batch through the pipeline and print the shape after every step.
+#    uv run python -m pi.pi0.data.data
+# --------------------------------------------------------------------------------------
+def main():
+    rng = np.random.default_rng(0)
+    B, d, T = 2, 14, 60  # an ALOHA-like robot: 14-dim state/action, 60 future steps available
+    raw = {
+        "images": {
+            "base_0_rgb": rng.integers(0, 256, size=(B, 480, 640, 3), dtype=np.uint8),
+            "left_wrist_0_rgb": rng.integers(0, 256, size=(B, 224, 224, 3), dtype=np.uint8),
+        },
+        "state": rng.standard_normal((B, d)).astype(np.float32),
+        "actions": rng.standard_normal((B, T, d)).astype(np.float32),
+        "prompt": ["fold the towel", "put the cup in the sink"],
+    }
+    stats = {"state": NormStats(mean=np.zeros(d), std=np.ones(d)), "actions": NormStats(mean=np.zeros(d), std=np.ones(d))}
+    mask = make_bool_mask(6, -1, 6, -1)
+    print("[raw]     images", {k: tuple(v.shape) for k, v in raw["images"].items()}, " state", raw["state"].shape,
+          " actions", raw["actions"].shape, " prompt", len(raw["prompt"]))
+    a = to_delta_actions(raw["state"], raw["actions"][:, :ACTION_HORIZON], mask)
+    print("[delta]   actions", a.shape, " gripper dim 6 unchanged:", bool(np.allclose(a[..., 6], raw["actions"][:, :50, 6])))
+    a = normalize(a, stats["actions"]); s = normalize(raw["state"], stats["state"])
+    print("[norm]    state", s.shape, " actions", a.shape)
+    img = resize_with_pad(torch.from_numpy(raw["images"]["base_0_rgb"]), *IMAGE_RESOLUTION)
+    print("[resize]  base_0_rgb", tuple(img.shape), img.dtype, " black rows top:", int((img[0].amax(dim=(1, 2)) == 0).sum()))
+    tok = PromptTokenizer(ByteEncoder())
+    ids, m = tok(raw["prompt"][0])
+    print("[token]   ids", ids.shape, " valid", int(m.sum()), " first ids", ids[:4].tolist(), "(BOS=2 then bytes+3)")
+    s32, a32 = pad_to_dim(s, ACTION_DIM), pad_to_dim(a, ACTION_DIM)
+    print("[pad]     state", s32.shape, " actions", a32.shape)
+    obs, actions = build_batch(raw, stats, tok, delta_mask=mask, train=True, generator=torch.Generator().manual_seed(0))
+    print("[output]  Observation.images", {k: tuple(v.shape) for k, v in obs.images.items()})
+    print("          image_masks", {k: v.tolist() for k, v in obs.image_masks.items()})
+    print("          state", tuple(obs.state.shape), " tokenized_prompt", tuple(obs.tokenized_prompt.shape),
+          " mask", tuple(obs.tokenized_prompt_mask.shape), " actions", tuple(actions.shape))
+    print("          image range [%.2f, %.2f]" % (obs.images["base_0_rgb"].min(), obs.images["base_0_rgb"].max()))
+
+
+if __name__ == "__main__":
+    main()

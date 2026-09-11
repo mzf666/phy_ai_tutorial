@@ -97,6 +97,12 @@ augmax 0.4.1 (`khdlr/augmax@7095ead`) 的实际语义, 和 torchvision 不同, �
 uv run pytest pi/pi0/data -q
 ```
 
+看一个 batch 怎么走 (逐步打印 shape):
+
+```
+uv run python -m pi.pi0.data.data
+```
+
 不做数值级对齐 (仓库原则 1).
 
 ## 6. cost 信息
