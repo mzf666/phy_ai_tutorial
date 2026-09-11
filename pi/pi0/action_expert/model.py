@@ -67,6 +67,13 @@ def posemb_sincos(pos: torch.Tensor, embedding_dim: int, min_period: float, max_
 # 2. Two-expert Gemma. openpi@215abfb gemma.py L158-L249 (Attention), L284-L333 (Block), L340-L411 (Module).
 #    Every expert owns its own norms, q/kv/out projections and MLP; q, k, v of all present experts are concatenated
 #    along the sequence axis and go through ONE attention. Nothing else is shared.
+#
+#    "MoE" here is NOT the LLM kind (Mixtral / DeepSeek): there is no router and no gating parameter. Which expert a
+#    token uses is fixed by modality when the inputs are assembled (xs[0] = image + prompt tokens, xs[1] = state +
+#    action tokens) and is the same in all 18 layers; the forward below just indexes `experts[i]` by list position.
+#    Also unlike LLM MoE, which only splits the FFN, the whole layer is split here (norms, q/k/v, out proj, FFN);
+#    only the softmax step is shared. The paper says "two sets of weights (also known as experts [45])", borrowing
+#    the word, not the mechanism. Think "modality-specific parameters", see README Sec. 1.5.
 # ======================================================================================
 class MoEBlock(nn.Module):
     def __init__(self, cfgs: tuple[GemmaConfig, ...]):

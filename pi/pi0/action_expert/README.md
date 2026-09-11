@@ -96,6 +96,18 @@ W1 ∈ R^{w×d} 是 `action_in_proj`, φ 是 `posemb_sincos`, W2 ∈ R^{w×2w} �
 
 一句话: `../vlm` 提供 "看和读" 的那套权重和它产生的 k / v, 本 module 提供 "动" 的那套权重; 两者是同一个 transformer 里并排的两条通道, 只通过 attention 单向地让 action 看观测.
 
+### 1.5 这里的 "expert" 不是 LLM 的 MoE
+
+论文只说 "two sets of weights (also known as experts [45])", [45] 引的是 Shazeer 2017 的 sparsely-gated MoE, 借的是术语不是机制. 与 Mixtral / DeepSeek 那类 MoE 的三点区别 (本仓库总结):
+
+| | LLM 的 MoE | π0 的双 expert |
+|---|---|---|
+| 路由 | 每层一个可学习的 gating 网络, 逐 token 算 softmax 选 top-k, 数据依赖, 需要负载均衡 loss | 没有任何 gating 参数. 按模态硬编码: 图像 / 指令 token 永远走 expert 0, state / action token 永远走 expert 1, 18 层全部一样. 代码里就是 `xs = [prefix, suffix]` 的 list 下标 |
+| MoE 化的范围 | 只把 FFN 换成多个 expert, attention 的 q / k / v 投影所有 token 共享 | 整层都分开: RMSNorm, q / k / v 投影, 输出投影, FFN 全部两套; 共享的只有 softmax 那一步的计算 (第 4.2 节) |
+| 动机 | 固定算力下扩参数量, 每个 token 只激活一小部分 | 让预训练的 VLM 权重和从零训练的动作权重不互相污染, 同时让 action 通过 attention 读观测; 顺带可以把 expert 1 做窄以加快 10 步去噪 |
+
+更贴切的类比是 "modality-specific parameters" (如 Transfusion): 同一个序列, 不同模态用不同参数, 只靠 attention 混合. openpi 的 `Module(configs=[...])` 也是按 "每个 expert 一份 config" 组织, 没有 router 字段 (`gemma.py` L340-L343). 本仓库沿用 openpi 的叫法把类命名为 `MoEBlock` / `MoEGemma`, 读的时候按 "mixture of modality-specific weights" 理解.
+
 ## 2. 复现范围
 
 | 有代码 | 只有事实 (背景) |
