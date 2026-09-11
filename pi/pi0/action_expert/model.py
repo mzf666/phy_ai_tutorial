@@ -57,7 +57,22 @@ def tiny_expert() -> GemmaConfig:
 def posemb_sincos(pos: torch.Tensor, embedding_dim: int, min_period: float, max_period: float) -> torch.Tensor:
     """pos float32[B] -> float32[B, embedding_dim] = concat(sin(2*pi*pos/period), cos(2*pi*pos/period)).
     period is log-uniform from min_period to max_period over embedding_dim/2 channels. pi0 calls this with
-    (timestep, 1024, 4e-3, 4.0): the slowest channel completes 1/4 of a cycle over tau in [0, 1], the fastest 250."""
+    (timestep, 1024, 4e-3, 4.0): the slowest channel completes 1/4 of a cycle over tau in [0, 1], the fastest 250.
+
+    Why (README Sec. 1.3): this is the Transformer sinusoidal positional encoding with the integer position replaced
+    by a continuous scalar in [0, 1]. A bare scalar appended to a 1024-wide activation carries almost no signal and an
+    MLP is insensitive to small differences in it; spreading tau over many frequencies (Fourier features) gives slow
+    channels that say roughly where tau is and fast channels that resolve differences of ~1e-3. sin/cos pairs make
+    every tau uniquely decodable and make shifts in tau linear maps of the embedding. The range is chosen for
+    tau in [0, 1] (upstream comment: "sensitivity in the range [0, 1]"): max_period 4 keeps the slowest channel
+    monotone on [0, 1]; min_period 4e-3 resolves the smallest training tau (0.001) and the Euler step (0.1) easily.
+    DDPM uses the same function on integer t in 0..1000; flow matching makes t continuous, so the periods rescale.
+
+    What `timestep` is: the flow-matching noise level tau, one scalar per sample, unrelated to the robot control
+    step t. Training draws tau ~ Beta(1.5, 1) * 0.999 + 0.001 per sample (pi0.py L197); inference walks the fixed grid
+    1.0, 0.9, ..., 0.1 (L228, L278). openpi convention: tau = 1 is pure noise, tau = 0 is the clean chunk, the
+    opposite of the paper's text (L226-L227). tau enters the network only here, mixed into the 50 action tokens
+    at the entry; no layer sees it again."""
     assert embedding_dim % 2 == 0
     fraction = torch.linspace(0.0, 1.0, embedding_dim // 2, device=pos.device)
     period = min_period * (max_period / min_period) ** fraction
