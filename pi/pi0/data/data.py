@@ -133,6 +133,17 @@ def uint8_to_model_range(images: torch.Tensor) -> torch.Tensor:
 #        hue strength defaults to 0.1 and openpi does not override it, so hue IS jittered.
 #        The saturation branch in augmax 0.4.1 discards its result (colorspace.py, `F.adjust_brightness(
 #        saturation, ...)` unassigned), so saturation=0.5 is effectively a no-op. We keep that no-op.
+#
+#    Why the geometric augmentations skip wrist cameras. Upstream is a bare `if "wrist" not in key`
+#    (model.py L176) and the paper does not discuss it; the reasoning below is ours.
+#    Crop-and-resize and small rotations simulate a slightly mis-posed camera. For the base (third-person)
+#    camera that variation is real: mounting differs across robots, sites and days, and it does not change
+#    the correct action, so the augmented image still matches its action label. A wrist camera is rigidly
+#    attached to the end-effector, so its view is a deterministic function of the arm pose: the gripper
+#    fingers sit at fixed pixels and the pixel offset between gripper and object is the very signal used
+#    for fine alignment. Shifting or rotating that image while keeping the action label injects label
+#    noise, and cropping would cut off the fingers at the frame edge. Color jitter does not touch
+#    geometry, so it is applied to every camera: lighting varies, geometry does not.
 # --------------------------------------------------------------------------------------
 def augment(images: torch.Tensor, key: str, generator: torch.Generator | None = None) -> torch.Tensor:
     """float32[B, H, W, 3] in [-1,1] -> same shape/range, randomly augmented per sample."""

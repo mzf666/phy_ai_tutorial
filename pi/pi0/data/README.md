@@ -81,6 +81,8 @@ augmax 0.4.1 (`khdlr/augmax@7095ead`) 的实际语义, 和 torchvision 不同, �
 - hue 的 strength 默认 0.1, openpi 没传这个参数, 所以色相**会被**抖动.
 - saturation 分支的结果没有赋值 (`F.adjust_brightness(saturation, amount)` 一行), 因此 saturation=0.5 实际是空操作. 本仓库保留这个空操作以忠于上游, 并记入 gap ledger.
 
+为什么几何增广只做非腕部相机: 上游只有一行 `if "wrist" not in key` (`model.py` L176), 论文未讨论, 以下是本仓库的推断. 裁剪缩放和小角度旋转模拟的是相机装歪了一点. 对 base 相机这是真实变化, 不同机器人、场地、日期的安装位置都有偏差, 而且不改变正确动作, 增广后动作标签仍成立. 腕部相机刚性固定在末端执行器上, 画面是手臂位姿的确定函数: 夹爪手指永远在固定像素, 物体相对夹爪的像素偏移正是精细对准用的信号. 对它平移或旋转而标签不变, 等于往标签里注入噪声, 裁剪还会切掉画面边缘的手指. 颜色抖动不改几何, 所以所有相机都做: 光照会变, 几何关系不会.
+
 ### 4.3 training objective / curriculum
 
 不在本 module (见 `flow_matching` 与 `train`). 与数据相关的部分: 预训练用上面的混合; post-training 用任务专属数据 5 到 100+ 小时 (论文 Sec. V-A).
