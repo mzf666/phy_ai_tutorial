@@ -23,7 +23,7 @@
 | [`pi0/action_expert`](pi0/action_expert/README.md) | Gemma 300M expert, 与 VLM 共享 attention 的双 expert 机制, state / action / timestep 嵌入, blockwise attention mask | 完成 |
 | [`pi0/flow_matching`](pi0/flow_matching/README.md) | Beta 时间步采样, 线性插值与目标速度, MSE loss, 10 步 Euler 采样与前缀 KV cache | 完成 |
 | [`pi0/infer`](pi0/infer/README.md) | 端到端推理链路, 参数量表, 各环节延时表 | 完成 |
-| `pi0/train` | 优化器与 schedule, 冻结 / LoRA, 预训练 → post-training 两阶段, cost 表 | 待做 |
+| [`pi0/train`](pi0/train/README.md) | 优化器与 schedule, 冻结 / LoRA, 预训练 → post-training 两阶段, cost 表 | 完成 |
 
 **推理**
 - VLM 模型结构, 输入输出 protocol: 图像 → SigLIP → 线性投影到 2048 宽, 与指令 token 拼接进 Gemma 2B (→ `vlm`).
