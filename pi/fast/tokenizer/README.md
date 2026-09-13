@@ -4,7 +4,11 @@
 
 **它改善的是收敛速度, 机制是去冗余, 不是滤高频.** 两层要分开: (1) 相对 π0 的 flow matching, 收益来自把连续回归换成离散 CE, Knowledge Insulation (arXiv:2505.23705 Sec. 5.2, Fig. 6b) 的解释是 flow-matching 梯度会扰乱预训练底座, 离散 CE 与 VLM 原生目标同构, 底座收敛快; 这层与频域无关. (2) 相对 naive 分箱, 论证是信息论的 (Sec. IV): 自回归的学习信号正比于每个 token 的边际信息量, 高频数据逐步分箱后相邻 token 几乎相等, 边际信息趋近 0; DCT 把时间轴上的相关性变成频域的稀疏, BPE 再把重复的 0 吞掉, 每个 token 才有信息. 证据: 论文 Sec. V-A 原话 "任何足够有效的压缩方法都能提高训练速度"; 没有频率概念的 FSQ 基线与 FAST 相当 (Fig. 6); 只做 DCT 不做 BPE 会因为大量重复 0 token 而明显变差 (Sec. VI-D). `round(γ·C)` 确实会把小的高频系数归零, 但 naive 分箱 (256 箱) 同样有损, Table I 是在保真度相当的前提下比较的, γ 调大只会多出 token 而不改变结论 (首图 (c)). 一句话: naive 分箱是 "有损但保留冗余", FAST 是 "有损程度相当但去掉冗余".
 
-**首图的论点**: 一个 50 × 7 = 350 个数的 chunk, DCT 后只剩 49 个非零整数 (b), BPE 压成 49 个 token, 解码曲线与原曲线几乎重合 (a); γ 是唯一的旋钮, 调大它 token 变多、误差变小 (c).
+**流程图**: 上排是编码的六步, 每步给出 shape 与一次真实 tiny 运行的数值; 下排是解码的镜像, 含上游的失败行为. 例子是一个 20 Hz、4 维的 1 秒 chunk (80 个数) 变成 21 个 token.
+
+![pipeline](figs/pipeline.png)
+
+**第二幅图的论点**: 一个 50 × 7 = 350 个数的 chunk, DCT 后只剩 49 个非零整数 (b), BPE 压成 49 个 token, 解码曲线与原曲线几乎重合 (a); γ 是唯一的旋钮, 调大它 token 变多、误差变小 (c).
 
 本 module 复现 FAST 动作分词器本身: 把一个连续的 action chunk `[H, D]` 变成一串离散整数 token, 以及反过来. 它没有神经网络, 只有五步可逆 (最后一步有损) 的信号处理. 它是 π0-FAST 相对 π0 的第一个增量: π0 的 flow matching 直接回归连续动作, π0-FAST 让 VLM 像生成文字一样逐个生成这些 token (→ `../data`, `../model`).
 
@@ -41,6 +45,8 @@
 | 入 `scale` | γ, 默认 10 (论文 Sec. V-B; `fast_hf` L20, L102) |
 | 入 `vocab_size` | BPE 词表上限, 含初始字母表; 默认 1024 (论文 Sec. V-B 单数据集设置; `fast_hf` L21, L103). 发布的 FAST+ 是 2048 (`processor_config.json`) |
 | 出 | 新的 `FASTTokenizer`: `min_token` = 全部量化系数的最小值 (FAST+ 为 −354), BPE 词表与 merge 表 |
+
+**codebook 是一个整体**: `scale`, `min_token`, BPE 词表 + merge 表三者绑定. `min_token` 决定码点, 词表是在这些码点上训出来的, 换一个 `min_token` 同一个系数 0 就不再是 `chr(354)`, 含它的 merge 全部失效; `scale` 决定整数取值范围, 换 γ 系数整体缩放, 会超出字母表被钳到 0. 上游把前两者存在 `processor_config.json`, 后者存在 `tokenizer.json`, 两个文件一起加载 (`fast_hf` L150-L157); 本仓库 `fit` 返回的对象把三者装在一起, `from_hf_dir` 两个文件一起读. 编码 (训练数据) 与解码 (模型输出) 必须用同一个实例, openpi 里两端确实是同一个 `FASTTokenizer` 对象 (`tokenizer.py` L61 与 L132). 第四层对齐, 即这些 id 怎么放进 PaliGemma 词表尾部, 在 `../data`.
 
 ### 1.4 归一化: `QuantileStats`, `normalize_quantile`, `unnormalize_quantile`
 
