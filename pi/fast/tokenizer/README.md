@@ -1,5 +1,9 @@
 # FAST · tokenizer: quantile 归一化, DCT-II, γ 缩放取整, 低频优先展平, 字节级 BPE
 
+**TL;DR.** FAST 解决的是 **训练侧** 的问题: 想让 VLM 像生成文字一样用 next-token prediction 输出动作, 就得先把连续的 action chunk 离散化; 以前的做法是每维每步分 256 箱, 在高频数据 (20–50 Hz) 上相邻 token 几乎相同, 模型学会 "复制上一个 token" 就能把 loss 压低, 结果是完全学不会灵巧任务 (论文 Sec. IV 的 toy 实验, Fig. 6 的 naive 基线为 0). 做法: 先把 1 秒的 chunk 沿时间轴做 DCT, 系数乘 γ = 10 取整, 稀疏矩阵按低频优先展平, 再用字节级 BPE 把长零串压掉, 一个 chunk 变成 30–60 个高信息量的 token (论文 Sec. V, Algorithm 1). 收益在训练: 与 π0 的 flow matching 相比, 大数据集上 3 倍更少的步数达到同样性能 (Fig. 9), 通才模型总 GPU 时少 5 倍 (Sec. VI-F). 代价在推理: 要逐个解码这 30–60 个 token, 每步跑完整的 2B 底座, 一个 chunk 约 750 ms 对比 π0 的 100 ms (RTX 4090, Sec. VI-E). 所以从 π0.5 起 (arXiv:2504.16054 Fig. 3), FAST token 只在训练时作为底座的监督信号, 推理仍走 flow-matching expert.
+
+**首图的论点**: 一个 50 × 7 = 350 个数的 chunk, DCT 后只剩 49 个非零整数 (b), BPE 压成 49 个 token, 解码曲线与原曲线几乎重合 (a); γ 是唯一的旋钮, 调大它 token 变多、误差变小 (c).
+
 本 module 复现 FAST 动作分词器本身: 把一个连续的 action chunk `[H, D]` 变成一串离散整数 token, 以及反过来. 它没有神经网络, 只有五步可逆 (最后一步有损) 的信号处理. 它是 π0-FAST 相对 π0 的第一个增量: π0 的 flow matching 直接回归连续动作, π0-FAST 让 VLM 像生成文字一样逐个生成这些 token (→ `../data`, `../model`).
 
 上游: tokenizer 源码在 HuggingFace [physical-intelligence/fast](https://huggingface.co/physical-intelligence/fast) 的 `processing_action_tokenizer.py` (`UniversalActionProcessor`, 150 行, Apache-2.0; 2026-09-13 访问, 下文记作 `fast_hf`), 同仓库 `processor_config.json` / `tokenizer.json` 是发布的通用分词器 FAST+ 的权重; openpi@215abfb `src/openpi/models/tokenizer.py` L51-L140 是它在 π0-FAST 里的调用方. 论文 [arXiv:2501.09747v1](https://arxiv.org/abs/2501.09747v1) Sec. V, Algorithm 1, Fig. 4, Appendix A–B. NumPy 重写, 不 import 上游, 不依赖 scipy / tokenizers.
