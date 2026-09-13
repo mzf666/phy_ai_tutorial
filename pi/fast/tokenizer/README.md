@@ -2,6 +2,8 @@
 
 **TL;DR.** FAST 解决的是 **训练侧** 的问题: 想让 VLM 像生成文字一样用 next-token prediction 输出动作, 就得先把连续的 action chunk 离散化; 以前的做法是每维每步分 256 箱, 在高频数据 (20–50 Hz) 上相邻 token 几乎相同, 模型学会 "复制上一个 token" 就能把 loss 压低, 结果是完全学不会灵巧任务 (论文 Sec. IV 的 toy 实验, Fig. 6 的 naive 基线为 0). 做法: 先把 1 秒的 chunk 沿时间轴做 DCT, 系数乘 γ = 10 取整, 稀疏矩阵按低频优先展平, 再用字节级 BPE 把长零串压掉, 一个 chunk 变成 30–60 个高信息量的 token (论文 Sec. V, Algorithm 1). 收益在训练: 与 π0 的 flow matching 相比, 大数据集上 3 倍更少的步数达到同样性能 (Fig. 9), 通才模型总 GPU 时少 5 倍 (Sec. VI-F). 代价在推理: 要逐个解码这 30–60 个 token, 每步跑完整的 2B 底座, 一个 chunk 约 750 ms 对比 π0 的 100 ms (RTX 4090, Sec. VI-E). 所以从 π0.5 起 (arXiv:2504.16054 Fig. 3), FAST token 只在训练时作为底座的监督信号, 推理仍走 flow-matching expert.
 
+**它改善的是收敛速度, 机制是去冗余, 不是滤高频.** 两层要分开: (1) 相对 π0 的 flow matching, 收益来自把连续回归换成离散 CE, Knowledge Insulation (arXiv:2505.23705 Sec. 5.2, Fig. 6b) 的解释是 flow-matching 梯度会扰乱预训练底座, 离散 CE 与 VLM 原生目标同构, 底座收敛快; 这层与频域无关. (2) 相对 naive 分箱, 论证是信息论的 (Sec. IV): 自回归的学习信号正比于每个 token 的边际信息量, 高频数据逐步分箱后相邻 token 几乎相等, 边际信息趋近 0; DCT 把时间轴上的相关性变成频域的稀疏, BPE 再把重复的 0 吞掉, 每个 token 才有信息. 证据: 论文 Sec. V-A 原话 "任何足够有效的压缩方法都能提高训练速度"; 没有频率概念的 FSQ 基线与 FAST 相当 (Fig. 6); 只做 DCT 不做 BPE 会因为大量重复 0 token 而明显变差 (Sec. VI-D). `round(γ·C)` 确实会把小的高频系数归零, 但 naive 分箱 (256 箱) 同样有损, Table I 是在保真度相当的前提下比较的, γ 调大只会多出 token 而不改变结论 (首图 (c)). 一句话: naive 分箱是 "有损但保留冗余", FAST 是 "有损程度相当但去掉冗余".
+
 **首图的论点**: 一个 50 × 7 = 350 个数的 chunk, DCT 后只剩 49 个非零整数 (b), BPE 压成 49 个 token, 解码曲线与原曲线几乎重合 (a); γ 是唯一的旋钮, 调大它 token 变多、误差变小 (c).
 
 本 module 复现 FAST 动作分词器本身: 把一个连续的 action chunk `[H, D]` 变成一串离散整数 token, 以及反过来. 它没有神经网络, 只有五步可逆 (最后一步有损) 的信号处理. 它是 π0-FAST 相对 π0 的第一个增量: π0 的 flow matching 直接回归连续动作, π0-FAST 让 VLM 像生成文字一样逐个生成这些 token (→ `../data`, `../model`).
