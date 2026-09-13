@@ -55,7 +55,7 @@
 |---|---|---|---|
 | [`fast/tokenizer`](fast/tokenizer/README.md) | quantile 归一化, 逐维 DCT-II, γ 缩放取整, 低频优先展平, 字节级 BPE 的 fit / encode / decode | `pi0/data` 的 chunk 截取 | 完成 |
 | [`fast/data`](fast/data/README.md) | prompt + 256 分箱 state + action token 拼成一条序列; input / ar / loss 三个 mask; 映射进 PaliGemma 词表尾部; FAST 的相机槽位与不 mask 规则 | `pi0/data` 图像预处理, delta action, 维度 padding | 完成 |
-| `fast/model` | prefix-LM 三块 mask [images \| prompt+state \| action]; 右对齐 padding; 定长 KV cache (prefill + 256 步); greedy / temperature 采样; EOS 早停; 从字符串反解 action | `pi0/vlm` 的 SigLIP, Gemma, `make_attn_mask` | 未开始 |
+| [`fast/model`](fast/model/README.md) | prefix-LM 三块 mask [images \| prompt+state \| action]; 右对齐 padding; 定长 KV cache (prefill + 256 步); greedy / temperature 采样; EOS 早停; tied logits head; 增长式 cache 与上游定长 cache 的等价性; 解码 position 偏 1 的上游行为 | `pi0/vlm` 的 SigLIP, Gemma, `make_attn_mask` | 完成 |
 | `fast/train` | 仅 postfix 的 next-token CE, 按有效 token 数归一; 只对 target 位置算 logits; warmup 1k → 常数 5e-5, AdamW(.9, .95) 无 wd, clip 1, EMA 0.999; LoRA rank 16 | `pi0/train` 的 `EMA`, `clip_and_step`, `select_trainable` | 未开始 |
 | `fast/infer` | 端到端 `infer(raw) → actions`, 解码步数与延时; `eval.py` 补 DROID 接口与 16 任务 rubric, LIBERO 复用 | `pi0/infer` 的 `Pi0Policy`, `RobotSpec`, `Env`, `run_episode` | 未开始 |
 
