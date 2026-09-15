@@ -8,6 +8,9 @@
 - π0: A Vision-Language-Action Flow Model for General Robot Control: https://arxiv.org/abs/2410.24164v1
   - 上游代码: [openpi](https://github.com/Physical-Intelligence/openpi) @ `215abfb217dbac7d5f1273282331b9b1866c0479`
   - 目录 `pi0/`, 分支 `topic/pi0`
+- FAST: Efficient Action Tokenization for Vision-Language-Action Models: https://arxiv.org/abs/2501.09747v1
+  - 上游代码: [openpi](https://github.com/Physical-Intelligence/openpi) @ `215abfb217dbac7d5f1273282331b9b1866c0479` (`pi0_fast.py`, `gemma_fast.py`, `tokenizer.py`), tokenizer 源码与发布权重: [physical-intelligence/fast](https://huggingface.co/physical-intelligence/fast) (HuggingFace, 2026-09-13 访问)
+  - 目录 `fast/`, 分支 `topic/fast`
 
 
 ## 关键技术栈
@@ -42,3 +45,34 @@
 **背景事实 (只陈述, 不写代码)**
 - PaliGemma checkpoint 的选取, 其预训练 recipe 与模型细节 (→ `vlm` README).
 - π 预训练混合数据的构成 (→ `data` README).
+
+
+### FAST: 用 DCT + BPE 把 action chunk 压成离散 token, 让 VLM 直接做 next-token prediction
+
+π0-FAST 与 π0 共享 PaliGemma 底座、数据组织、评测环境. 本 topic 只写 **增量**: action 的离散化, 序列格式, 自回归解码, CE 训练. 其余一律 `from pi.pi0.<module> import ...`.
+
+| module | 关键技术 (增量) | 复用 π0 | 状态 |
+|---|---|---|---|
+| [`fast/tokenizer`](fast/tokenizer/README.md) | quantile 归一化, 逐维 DCT-II, γ 缩放取整, 低频优先展平, 字节级 BPE 的 fit / encode / decode | `pi0/data` 的 chunk 截取 | 完成 |
+| [`fast/data`](fast/data/README.md) | prompt + 256 分箱 state + action token 拼成一条序列; input / ar / loss 三个 mask; 映射进 PaliGemma 词表尾部; FAST 的相机槽位与不 mask 规则 | `pi0/data` 图像预处理, delta action, 维度 padding | 完成 |
+| [`fast/model`](fast/model/README.md) | prefix-LM 三块 mask [images \| prompt+state \| action]; 右对齐 padding; 定长 KV cache (prefill + 256 步); greedy / temperature 采样; EOS 早停; tied logits head; 增长式 cache 与上游定长 cache 的等价性; 解码 position 偏 1 的上游行为 | `pi0/vlm` 的 SigLIP, Gemma, `make_attn_mask` | 完成 |
+| [`fast/train`](fast/train/README.md) | 仅 postfix 的 next-token CE, 按有效 token 数归一; 只对 target 位置算 logits; warmup 1k → 常数 5e-5, AdamW(.9, .95) 无 wd, clip 1, EMA 0.999; 逐 head 的 LoRA rank 16 与只冻结 llm 的规则 | `pi0/train` 的 `EMA`, `clip_and_step`, `select_trainable` | 完成 |
+| [`fast/infer`](fast/infer/README.md) | 端到端 `infer(raw) → actions`, 解码步数与延时; `eval.py` 补 DROID 接口与 16 任务 rubric, LIBERO 复用 | `pi0/infer` 的 `Pi0Policy`, `RobotSpec`, `Env`, `run_episode` | 完成 |
+
+**推理**
+- action token → DCT 系数 → 连续 action chunk 的逆变换; 解码失败时的上游行为 (→ `tokenizer`, `infer`).
+- 自回归解码: prefix 一次 prefill, 之后每步一个 token, 直到 EOS 或 256 步; greedy, 双臂任务 temperature 0.7 (→ `model`).
+- 没有 action expert: logits 头是 embedding 的转置, 总参数 2,923,335,408 (→ `model`).
+
+**训练**
+- FAST 的两个超参 (scale γ = 10, BPE vocab 1024 / 发布的 FAST+ 为 2048) 与 BPE 训练细节 (→ `tokenizer`).
+- 序列格式与 loss mask: 只在 `Action: … |` 段算 CE (→ `data`, `train`).
+- 优化器与 schedule (论文 Appendix C), LIBERO 40k 步 / DROID 240k 步 @ 256 的规模 (→ `train`).
+
+**评测**
+- tokenizer 自身: 压缩率 (tokens / chunk) 与重建误差随 γ 的 trade-off (→ `tokenizer/eval.py`).
+- 策略: LIBERO 四套二值成功率; DROID 16 任务 44 trial 的进度 rubric; 实机任务的进度百分比 (→ `infer/eval.py`).
+
+**背景事实 (只陈述, 不写代码)**
+- FAST+ 的训练混合 (约 1M 个 1 秒 chunk, 论文 Appendix A) 与泛化评测数据集 (Table III) (→ `tokenizer` README).
+- FSQ / naive 分箱基线与 OpenVLA + FAST 的消融结论 (→ `tokenizer` README).
