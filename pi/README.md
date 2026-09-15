@@ -57,7 +57,7 @@
 | [`fast/data`](fast/data/README.md) | prompt + 256 分箱 state + action token 拼成一条序列; input / ar / loss 三个 mask; 映射进 PaliGemma 词表尾部; FAST 的相机槽位与不 mask 规则 | `pi0/data` 图像预处理, delta action, 维度 padding | 完成 |
 | [`fast/model`](fast/model/README.md) | prefix-LM 三块 mask [images \| prompt+state \| action]; 右对齐 padding; 定长 KV cache (prefill + 256 步); greedy / temperature 采样; EOS 早停; tied logits head; 增长式 cache 与上游定长 cache 的等价性; 解码 position 偏 1 的上游行为 | `pi0/vlm` 的 SigLIP, Gemma, `make_attn_mask` | 完成 |
 | [`fast/train`](fast/train/README.md) | 仅 postfix 的 next-token CE, 按有效 token 数归一; 只对 target 位置算 logits; warmup 1k → 常数 5e-5, AdamW(.9, .95) 无 wd, clip 1, EMA 0.999; 逐 head 的 LoRA rank 16 与只冻结 llm 的规则 | `pi0/train` 的 `EMA`, `clip_and_step`, `select_trainable` | 完成 |
-| `fast/infer` | 端到端 `infer(raw) → actions`, 解码步数与延时; `eval.py` 补 DROID 接口与 16 任务 rubric, LIBERO 复用 | `pi0/infer` 的 `Pi0Policy`, `RobotSpec`, `Env`, `run_episode` | 未开始 |
+| [`fast/infer`](fast/infer/README.md) | 端到端 `infer(raw) → actions`, 解码步数与延时; `eval.py` 补 DROID 接口与 16 任务 rubric, LIBERO 复用 | `pi0/infer` 的 `Pi0Policy`, `RobotSpec`, `Env`, `run_episode` | 完成 |
 
 **推理**
 - action token → DCT 系数 → 连续 action chunk 的逆变换; 解码失败时的上游行为 (→ `tokenizer`, `infer`).
