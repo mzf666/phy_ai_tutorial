@@ -93,7 +93,7 @@
 4. `log_softmax`, 取 target 的 log-prob, 乘 `loss_mask[:, 1:]`, 逐样本除以有效数, batch mean.
 5. backward, 全局范数裁剪到 1, AdamW, EMA.
 
-tiny 例子 (`main()`): 一个样本 125 个真实 token = 62 prefix + 63 postfix, 只有 63 个位置进 loss; 初始 loss ≈ ln 257152 ≈ 12.46 附近 (随机权重).
+tiny 例子 (`main()`): 样本 0 有 95 个真实 token = 65 prefix + 30 postfix, 只有 30 个位置进 loss. 随机初始化的 tiny 模型 loss ≈ 60, 远大于均匀分布的 ln 257152 = 12.46, 因为 tied embedding 是 N(0, 1) 初始化再乘 √width, logits 尺度很大; 测试 `uniform_logits_give_log_vocab` 固定 ln V 这个基准.
 
 ### 4.2 论文与 openpi 的差异
 
