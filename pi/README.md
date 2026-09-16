@@ -97,7 +97,7 @@
 | [`pi05/expert`](pi05/expert/README.md) | adaRMSNorm action expert: 时间 MLP, 每层两个 norm + final norm 的 (scale, shift, gate), gated residual, 零初始化 ⇒ 初始时 expert 是恒等映射; 去掉 state token 与 `state_proj`; 参数量增量 | `pi0/action_expert` `MoEBlock` / `MoEGemma` / `posemb_sincos`; `pi0/vlm` attention | 完成 |
 | [`pi05/hier`](pi05/hier/README.md) | 一个模型两级推理: HL = prefix-LM 逐 token 解码 subtask 文本 (greedy, EOS 停), LL = 以 subtask 为 prompt 的 10 步 Euler; Hi Robot 的调度 (1 s 或插话重跑 HL, `respond:` 口头回复剥离, 插话完成后回到原命令) | `fast/model` 的右对齐 / cache / 解码循环, tied head; `pi0/flow_matching` 采样器 | 完成 |
 | [`pi05/infer`](pi05/infer/README.md) | 端到端 `Pi05Policy.infer(raw)` (openpi 的 flow-only 推理: prompt + state 分箱 + `Action: ` 前缀), 移动操作机器人 spec (18 / 19 维, 50 Hz, 4 相机), 延时表 (Hi Robot App. B.3); `eval.py`: mock-home 四任务 rubric (App. B), 语言跟随两指标 (App. C), Hi Robot 的 IA / TP, 带高层节奏的 episode 循环 | `pi0/infer` `Env` / `run_episode`; `fast/infer` rubric 聚合 | 完成 |
-| [`pi05/train`](pi05/train/README.md) | 联合目标 Eq. 1 与 Fig. 18 三块 mask; 两阶段 curriculum 与每阶段的数据混合 (MM / ME / CE / HL / WD / VI); openpi `pi05_*` 微调超参; Hi Robot 高层策略超参 (App. C.2); cost 表 | `pi0/train` 优化器 / EMA / clip; `fast/train` CE; `pi0/flow_matching/train` 时间步 / 插值 | 未开始 |
+| [`pi05/train`](pi05/train/README.md) | 联合目标 Eq. 1 与 Fig. 18 三块 mask; 两阶段 curriculum 与每阶段的数据混合 (MM / ME / CE / HL / WD / VI); openpi `pi05_*` 微调超参; Hi Robot 高层策略超参 (App. C.2); cost 表 | `pi0/train` 优化器 / EMA / clip; `fast/train` CE; `pi0/flow_matching/train` 时间步 / 插值 | 完成 |
 
 **推理**
 - state 分箱进 prompt, 序列 `Task: …, State: …;\nAction: `, 200 token 上限; LL 推理时 FAST token 段为空 (→ `data`).
