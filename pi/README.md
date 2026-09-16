@@ -11,6 +11,10 @@
 - FAST: Efficient Action Tokenization for Vision-Language-Action Models: https://arxiv.org/abs/2501.09747v1
   - 上游代码: [openpi](https://github.com/Physical-Intelligence/openpi) @ `215abfb217dbac7d5f1273282331b9b1866c0479` (`pi0_fast.py`, `gemma_fast.py`, `tokenizer.py`), tokenizer 源码与发布权重: [physical-intelligence/fast](https://huggingface.co/physical-intelligence/fast) (HuggingFace, 2026-09-13 访问)
   - 目录 `fast/`, 分支 `topic/fast`
+- π0.5: a Vision-Language-Action Model with Open-World Generalization: https://arxiv.org/abs/2504.16054v1
+  - 上游代码: [openpi](https://github.com/Physical-Intelligence/openpi) @ `215abfb217dbac7d5f1273282331b9b1866c0479` (`pi0_config.py` 的 `pi05` 开关, `pi0.py` 的 adaRMSNorm 路径, `gemma.py` `RMSNorm(x, cond)`, `tokenizer.py` L22-L29 的离散 state prompt, `config.py` 的 `pi05_*` 训练配置). 上游只开源了 post-training 之后的 flow-matching 推理与微调; 联合目标 (FAST token + flow), 两阶段 curriculum, 高层 subtask 推理只有论文, 本仓库按论文写并进 ledger
+  - 同系列: Hi Robot: Open-Ended Instruction Following with Hierarchical VLA Models: https://arxiv.org/abs/2502.19417v2 (两级推理的来源: 高层 VLM 出 subtask 文本, 低层 π0 出动作; 合成用户指令数据; 高层训练超参). 无开源代码
+  - 目录 `pi05/`, 分支 `topic/pi05`
 
 
 ## 关键技术栈
@@ -76,3 +80,44 @@
 **背景事实 (只陈述, 不写代码)**
 - FAST+ 的训练混合 (约 1M 个 1 秒 chunk, 论文 Appendix A) 与泛化评测数据集 (Table III) (→ `tokenizer` README).
 - FSQ / naive 分箱基线与 OpenVLA + FAST 的消融结论 (→ `tokenizer` README).
+
+
+### π0.5: 先用 FAST token 做离散预训练, 再加一个 adaRMSNorm 的 flow-matching expert 做 post-training; 同一个模型先出 subtask 文本再出动作
+
+π0.5 (arXiv:2504.16054v1) 相对 π0 与 FAST 的增量只有四处, 其余全部 `from pi.pi0 / pi.fast import ...`:
+
+1. **输入侧**: proprioceptive state 不再是 action expert 的一个连续 token, 而是分 256 箱后写进 prompt 文本 (`tokenizer.py` L22-L29: `Task: <prompt>, State: <bins>;\nAction: `), `max_token_len` 48 → 200 (`pi0_config.py` L39); 归一化改 quantile (`config.py` L187); prompt 里加 `<control mode> joint/end effector <control mode>` 标签 (论文 Sec. IV-C); 动作维度 padding 到 32 (`config.py` L868).
+2. **action expert**: timestep 不再与 noisy action 拼接过 MLP, 而是单独过 `swish(W2 swish(W1 φ(τ)))`, 然后在 expert 的每一层每个 RMSNorm 处做 adaptive RMSNorm (零初始化的 Dense(w → 3w) 给出 scale / shift / gate, 残差乘 gate) (论文 Appendix E; `pi0.py` L93-L95, L162-L169; `gemma.py` L113-L131, L303-L311, L453-L459).
+3. **训练目标**: 一条序列同时带 FAST 动作 token 与 expert 的连续动作 token, loss = 文本 + FAST token 的 CE + α · flow-matching MSE (论文 Eq. 1); attention 上 expert token 看 prefix 与彼此, 不看 FAST token, FAST token 也不看 expert (论文 Appendix E, Fig. 18). 两阶段: 280k 步 α = 0 (纯离散, 没有 expert), 再 80k 步 α = 10 (expert 随机初始化) (论文 Sec. IV-D). 上游没有这段代码.
+4. **两级推理**: 同一个模型先以高层 prompt (如 "clean the kitchen") 自回归解码一句 subtask (如 "pick up the pillow"), 再以 subtask 为 prompt 走 10 步 flow matching 出 action chunk (论文 Sec. IV-A, IV-B; Fig. 3). 这条机制来自 Hi Robot (arXiv:2502.19417v2): 高层每 1 s 或用户插话时重跑, 口头回复从命令里剥离后再送低层 (Hi Robot Sec. 4.1-4.2). 上游没有这段代码.
+
+| module | 关键技术 (增量) | 复用 π0 / FAST | 状态 |
+|---|---|---|---|
+| [`pi05/data`](pi05/data/README.md) | 离散 state 进 prompt 的序列格式 (LL 推理 / FAST 训练 / HL 文本目标 三种 postfix), `max_token_len` 200, control-mode 标签, quantile 归一化, 32 维 padding; HL 样本 (高层 prompt → `Subtask: …`, 可带 `<locXXXX>` 框); 高层用 4 个相机、低层用 3 个的槽位规则; Hi Robot 合成标注的格式 (背景) | `pi0/data` 图像 / delta / padding / 增广; `fast/data` 分箱, 词表尾部映射, FAST 编码; `fast/tokenizer` quantile | 未开始 |
+| [`pi05/expert`](pi05/expert/README.md) | adaRMSNorm action expert: 时间 MLP, 每层两个 norm + final norm 的 (scale, shift, gate), gated residual, 零初始化 ⇒ 初始时 expert 是恒等映射; 去掉 state token 与 `state_proj`; 参数量增量 | `pi0/action_expert` `MoEBlock` / `MoEGemma` / `posemb_sincos`; `pi0/vlm` attention | 未开始 |
+| [`pi05/hier`](pi05/hier/README.md) | 一个模型两级推理: HL = prefix-LM 逐 token 解码 subtask 文本 (greedy, EOS 停), LL = 以 subtask 为 prompt 的 10 步 Euler; Hi Robot 的调度 (1 s 或插话重跑 HL, `respond:` 口头回复剥离, 插话完成后回到原命令) | `fast/model` 的右对齐 / cache / 解码循环, tied head; `pi0/flow_matching` 采样器 | 未开始 |
+| [`pi05/infer`](pi05/infer/README.md) | 端到端 `Pi05Policy.infer(raw)` (openpi 的 flow-only 推理: prompt + state 分箱 + `Action: ` 前缀), 移动操作机器人 spec (18 / 19 维, 50 Hz, 4 相机), 延时表 (Hi Robot App. B.3); `eval.py`: mock-home 四任务 rubric (App. B), 语言跟随两指标 (App. C), Hi Robot 的 IA / TP, 带高层节奏的 episode 循环 | `pi0/infer` `Env` / `run_episode`; `fast/infer` rubric 聚合 | 未开始 |
+| [`pi05/train`](pi05/train/README.md) | 联合目标 Eq. 1 与 Fig. 18 三块 mask; 两阶段 curriculum 与每阶段的数据混合 (MM / ME / CE / HL / WD / VI); openpi `pi05_*` 微调超参; Hi Robot 高层策略超参 (App. C.2); cost 表 | `pi0/train` 优化器 / EMA / clip; `fast/train` CE; `pi0/flow_matching/train` 时间步 / 插值 | 未开始 |
+
+**推理**
+- state 分箱进 prompt, 序列 `Task: …, State: …;\nAction: `, 200 token 上限; LL 推理时 FAST token 段为空 (→ `data`).
+- adaRMSNorm 的时间注入: `φ(τ)` → 时间 MLP → 每层 (scale, shift, gate); 动作 token 直接线性投影; 51 → 50 个 suffix token (→ `expert`).
+- 高层解码: 4 相机 + 高层 prompt → subtask 文本 (greedy, EOS); 低层: 3 相机 + subtask + state → 10 步 flow (→ `hier`).
+- 高低层节奏: HL 每 1 s 或用户插话; 口头回复 `respond: …` 的剥离; LL 的 chunk 长度 50 与执行长度 (未披露 → ledger) (→ `hier`, `infer`).
+- 部署: 18 / 19 维目标 (关节 + 夹爪 + 底盘速度 + 升降), 50 Hz PD 跟踪, 延时 (Hi Robot App. B.3: 4090 上 LL 73 ms, HL prefill 47 ms + 13.2 ms / token) (→ `infer`).
+
+**训练**
+- 三种 postfix 的序列构造与三个 mask (input / ar / loss), HL 样本与 bbox 目标, control-mode 标签, quantile 统计量, 32 维 padding, 增广参数 (论文 App. E 与 π0 相同) (→ `data`).
+- Eq. 1: CE (文本 + FAST) + α · MSE, α = 0 → 10; Fig. 18 mask; Beta(1.5, 1) 时间步 s = 0.999 与 π0 相同 (→ `train`).
+- 两阶段: 280k 离散预训练 → 80k post-training, expert 随机初始化, post-training 去掉 CE 数据, 加 VI; 预训练 97.6% 样本非 MM; VI 占 HL-MM 样本 11% (→ `train`).
+- 优化器: 论文未披露 (→ ledger); openpi `pi05_libero` (warmup 10k, 5e-5 常数, batch 256, EMA 0.999, 30k) 与 `pi05_full_droid_finetune` (warmup 1k, 5e-5, batch 256, 100k); Hi Robot 高层 AdamW(.9, .95) 无 wd, clip 1, EMA 0.999, warmup 1k → 1e-5, batch 512, 8 × H100 约 2 小时 (→ `train`).
+
+**评测**
+- mock-home 四任务 rubric (Dishes in Sink 8 分, Items in Drawer 4 分, Laundry Basket 3 分, Make Bed 5 分), 每策略每任务 10 次, 3 个 mock + 3 个真实家庭; 语言跟随: 2 场景 × 5 物体, language following rate 与 success rate, 随机基线 20%; Hi Robot: Instruction Accuracy 与 Task Progress, 每任务每方法 20 次 (→ `infer/eval.py`).
+- 高层策略的替代基线 (implicit HL / no HL / GPT-4 / human HL) 只陈述 (→ `hier` README).
+
+**背景事实 (只陈述, 不写代码)**
+- 数据混合的构成: MM 约 400 小时 / 约 100 个家庭, ME, CE (含 OXE), HL 人工标注, WD (CapsFusion, COCO, Cambrian-7M, PixMo, VQAv2, 室内 bbox), VI 语言遥操作 (→ `data`, `train` README).
+- Hi Robot 的合成数据生成 (用大 VLM 给 (观测, skill 标签) 反推用户 prompt 与机器人回复, 按场景 / 回复类型分类) (→ `data` README).
+- 消融与对比结论 (Fig. 8-13, 15-17): 环境数 scaling, ME / CE / WD / VI / HL 各自的贡献, π0-FAST+Flow 基线 (→ `train`, `hier` README).
+- 机器人平台: 两种移动操作臂, 4 相机, 2 × 6 DoF 臂 + 夹爪, 全向底盘, 1-2 DoF 升降 (→ `infer` README).
