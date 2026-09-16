@@ -14,14 +14,14 @@
 
 ## 1. I/O 契约
 
-### 1.1 `make_joint_mask(prefix_mask, fast_mask, n_expert)` → bool[B, P + F + E, P + F + E] (论文 Appendix E, Fig. 18)
+### 1.1 `make_joint_mask(prefix_valid, post_valid, n_expert)` → bool[B, S + E, S + E] (论文 Appendix E, Fig. 18)
 
 | 名称 | shape / dtype | 说明 |
 |---|---|---|
-| 入 `prefix_mask` | bool[B, P] | 图像 + 文本 prefix 的有效位 (`ar_mask == 0` 的 token) |
-| 入 `fast_mask` | bool[B, F] | FAST 动作 token (postfix, `ar_mask == 1`) 的有效位 |
+| 入 `prefix_valid` | bool[B, S] | 在 `[images \| tokens]` 这条轴上, 哪些列是有效的 prefix token (`ar_mask == 0`) |
+| 入 `post_valid` | bool[B, S] | 同一条轴上, 哪些列是有效的 FAST / 文本 postfix token (`ar_mask == 1`) |
 | 入 `n_expert` | int | expert 的连续动作 token 数 (50) |
-| 出 | bool[B, N, N] | 行 = query, 列 = key |
+| 出 | bool[B, S + E, S + E] | 行 = query, 列 = key; expert 的 E 列接在 S 之后 |
 
 | query \ key | prefix | FAST | expert |
 |---|---|---|---|
