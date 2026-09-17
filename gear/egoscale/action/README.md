@@ -6,7 +6,7 @@
 
 ![pipeline](figs/pipeline.png)
 
-**第二幅图的论点**: `figs/action_spaces.png` 要让读者看出, 三种动作空间的区别不只是维度 (18 / 108 / 62), 而是"监督信号里还剩多少手指信息": 腕部表示把手指信息全丢了, 指尖表示保留了几何但丢了关节可行性 (映射回关节时会产生不可行构型), 只有重定向关节角同时保住了两者 —— 这正是论文 §3.6 的消融结论.
+**第二幅图的论点**: `figs/action_spaces.png` 要让读者看出, 三种动作空间的区别不只是维度 (18 / 108 / 62), 而是"监督信号把手指钉死了多少". 中间那张图是本仓库的机制自测: 同一个 NLP、同一组目标, 只把监督从 20 个关键点换成 5 个指尖, 关节角误差就从 2.0e-4 rad 涨到 0.131 rad —— 整根手指的内部构型没有被约束住. 这正是论文 §3.6 说指尖表示"映射后常产生不可行关节构型, 在 Card / Bottle 这种接触敏感任务上抓取不稳"的机制. 右边那张是论文图 8 的原始数字, 只引用不复现.
 
 本 module 只复现**动作表示与重定向本身**: 从原始位姿流到动作向量, 以及逆过程. 动作向量怎么被拼进 batch、怎么归一化、怎么按本体 padding, 在 [`../data`](../data/README.md); 动作向量怎么被模型消费, 在 [`../dit`](../dit/README.md). 它是整条链路的**第 0 步**: 没有它, 20,854 小时视频只是像素.
 
@@ -57,17 +57,17 @@
 | `fk(q)` 出 `p` | `(20, 3)` float64 | 米, 腕部坐标系 | 20 个机器人关键点位置 (每指 4 个: MCP / PIP / DIP / TIP) |
 | `fk_pose(q)` 出 | `(20, 4, 4)` float64 | 齐次变换 | 同上但带朝向 (附录 D 的 "positions and quaternions") |
 
-**`retarget_chunk(kp_human, hand, weights, alpha, q_init)`** (论文附录 D)
+**`retarget_chunk(kp_human, hand, cfg, q_init=None, kp_weight=None)`** (论文附录 D)
 
 | 名称 | shape / dtype | 取值 | 说明 |
 |---|---|---|---|
 | 入 `kp_human` | `(T, 20, 3)` float64 | 米, **腕部坐标系** | 去掉腕部后的 20 个人手关键点位置; 由 `human_keypoints_in_wrist_frame` 从 `(T, 21, 4, 4)` 得到 |
 | 入 `hand` | `ToyHand22` | | 目标手 |
-| 入 `weights` | `RetargetWeights` | 四项权重 | **论文只说 "a weighted combination of different objectives", 项与权重均未披露**, 见 §8 |
-| 入 `alpha` | `float` | `(0, 1]` | 一阶指数滤波系数; **未披露**, 见 §8 |
+| 入 `cfg` | `ActionConfig` | | 其中 `weights` 是目标函数三项权重 (**论文只说 "a weighted combination of different objectives", 项与权重均未披露**), `alpha` 是滤波系数 (**未披露**), `ipopt_*` 是求解器选项 (**未披露**), 见 §8 |
 | 入 `q_init` | `(22,)` float64 或 `None` | | 第 0 帧的 warm start; `None` 取 `limits` 的中点 |
+| 入 `kp_weight` | `(20,)` float64 或 `None` | ≥ 0 | 每个关键点的监督权重, 默认全 1 (附录 D 的默认). 只把 5 个 TIP 置 1 就退化成 §3.6 fingertip 表示所携带的信息量 —— `figs/action_spaces.png` 的 (b) 图就是这样测出来的 |
 | 出 `q` | `(T, 22)` float64 | 弧度, 落在 `limits` 内 | 滤波后的关节角序列 |
-| 出 `info` | `dict` | `residual (T,)`, `converged (T,) bool`, `n_fallback int` | 每帧 IPOPT 的目标值与收敛标志 |
+| 出 `info` | `dict` | `raw (T,22)`, `residual (T,)`, `converged (T,) bool`, `n_fallback int`, `scale float` | 滤波前的解、每帧 IPOPT 的目标值与收敛标志、尺度比 |
 
 单帧求解的数学形式 (附录 D: "solve a nonlinear program over the 22 joint angles, subject only to joint limits from the URDF"):
 
@@ -168,7 +168,7 @@ s.t.  limits[:, 0] ≤ q ≤ limits[:, 1]                    # 唯一的约束
 `test_parity.py` (CPU, 约 40 秒) 检查什么:
 - **shape / 维度**: `wrist_pose_world`、`relative_wrist_motion`、`encode_se3` 四种表示、`ToyHand22.fk`、三种动作空间的 18 / 108 / 62 维、`FingertipToJointMLP` 的参数量与手算值一致;
 - **解析性质**: `ΔW_0` 是单位阵; `W_t = W_0 · ΔW_t` 复原; `decode(encode(X)) == X` 对四种表示成立; `ΔW` 对任意全局世界系变换 `G`(左乘所有 `T_wc`) 不变; `α = 1` 时指数滤波是恒等; oracle 重定向的残差趋于 0 且关节角落在限位内;
-- **分布 / 不变性**: 随机 `q` 经 FK → 重定向 → FK 的关键点误差分位数; 关节限位在 1000 次随机求解中从未被越界.
+- **分布 / 不变性**: 12 个随机可达姿态经 FK → 重定向 → FK 的关键点误差中位数 < 1e-4 m、95 分位 < 1e-3 m; 给物理上不可达的目标时关节角仍然不越界.
 
 ```
 uv run pytest gear/egoscale/action -q
@@ -201,6 +201,7 @@ uv run python gear/egoscale/action/figs/make_figs.py
 | `exponential_filter` | 论文附录 D "further smoothed using a first-order exponential filter" |
 | `retarget_chunk` | 论文附录 D 全段 |
 | `human_keypoints_in_wrist_frame` | 论文 §2.1 + 附录 D (FK 的输出在腕部系, 人手侧需转到同一系) |
+| `retarget_chunk` 的 `kp_weight` | 论文 §3.6 的 fingertip 分支只给 5 个指尖的 SE(3) 轨迹; 本仓库用同一个 NLP 的监督掩码来度量它的信息量 |
 | `build_action_chunk` (`wrist_only` / `fingertip` / `full`) | 论文 §3.6 与图 8 |
 | `FingertipToJointMLP` | 论文 §3.6 "a fingertip-based representation [42] that predicts SE(3) trajectories of the wrist and fingertips, followed by an MLP mapping to robot joint commands"; [42] = EgoVLA [arXiv:2507.12440](https://arxiv.org/abs/2507.12440) |
 | `paper()` 的 `n_keypoints_human=21`, `n_keypoints_robot=20`, `n_joints=22` | 论文 §2.1 / 附录 D |

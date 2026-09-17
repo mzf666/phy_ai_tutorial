@@ -371,7 +371,9 @@ def palm_scale(kp_human: np.ndarray, hand: ToyHand22) -> float:
     return robot / max(human, 1e-9)
 
 
-def _build_solver(hand: ToyHand22, weights: RetargetWeights, cfg: ActionConfig):
+def _build_solver(
+    hand: ToyHand22, weights: RetargetWeights, cfg: ActionConfig, kp_weight: np.ndarray
+):
     """App. D: "solve a nonlinear program over the 22 joint angles, subject only to joint
     limits from the URDF, and minimize a weighted combination of different objectives".
     目标函数的项与权重未披露, 见 README Sec. 8.
@@ -384,8 +386,10 @@ def _build_solver(hand: ToyHand22, weights: RetargetWeights, cfg: ActionConfig):
     q_prev = ca.MX.sym("q_prev", N_JOINTS)
     q_rest = ca.DM(hand.q_rest)
 
+    # kp_weight 决定哪些关键点被监督: 全 1 是论文默认的 "retarget the 21 keypoints";
+    # 只在 5 个指尖上为 1 就是 Sec. 3.6 的 fingertip 分支所能提供的全部信息.
     diff = hand._p_sym - target
-    cost = weights.w_pos * ca.sum1(ca.sum2(diff * diff))
+    cost = weights.w_pos * ca.sum1(ca.DM(kp_weight) * ca.sum2(diff * diff))
     cost += weights.w_smooth * ca.sumsqr(q - q_prev)
     cost += weights.w_reg * ca.sumsqr(q - q_rest)
 
@@ -417,12 +421,19 @@ def retarget_chunk(
     hand: ToyHand22,
     cfg: ActionConfig,
     q_init: np.ndarray | None = None,
+    kp_weight: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict]:
-    """(T, 20, 3) 腕部系人手关键点 -> (T, 22) 关节角, 逐帧 NLP + warm start + 指数滤波."""
+    """(T, 20, 3) 腕部系人手关键点 -> (T, 22) 关节角, 逐帧 NLP + warm start + 指数滤波.
+
+    kp_weight: (20,) 每个关键点的监督权重, 默认全 1 (论文 App. D 的默认). 只把 5 个指尖
+    置 1 就退化成 Sec. 3.6 的 fingertip 表示所携带的信息量.
+    """
     assert kp_human.ndim == 3 and kp_human.shape[1:] == (N_KEYPOINTS_ROBOT, 3), kp_human.shape
     if cfg.alpha is None:
         raise ValueError("alpha 未披露 (见 README Sec. 8); paper() 配置无法求解, 请用 tiny()")
-    solver = _build_solver(hand, cfg.weights, cfg)
+    if kp_weight is None:
+        kp_weight = np.ones(N_KEYPOINTS_ROBOT)
+    solver = _build_solver(hand, cfg.weights, cfg, np.asarray(kp_weight, float).reshape(-1, 1))
     scale = palm_scale(kp_human, hand)
 
     q_prev = hand.q_rest.copy() if q_init is None else hand.clamp(np.asarray(q_init, float))
@@ -447,6 +458,7 @@ def retarget_chunk(
         raw[t] = q_prev
         residual[t] = float(sol["f"])
     return exponential_filter(raw, cfg.alpha), {
+        "raw": raw,
         "residual": residual,
         "converged": converged,
         "n_fallback": n_fallback,
