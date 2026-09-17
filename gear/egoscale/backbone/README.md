@@ -82,6 +82,7 @@ backbone_features = self.vl_self_attention(backbone_features)
 | 2 | GR00T N1 论文说 backbone 是 **Eagle-2** (SmolLM2 + SigLIP-2), 224×224 + pixel shuffle → 每帧 **64** 个图像 token, 取第 **12** 层 ([arXiv:2503.14734](https://arxiv.org/abs/2503.14734) §2.1) | 作为 N1 的事实陈述 | 但 EgoScale 用的是 N1.5 级别的 backbone |
 | 3 | 已发布的 N1.5 checkpoint 的 `eagle_path` 显示是 **Qwen3-1.7B + SigLIP2-400M, 1 层 MLP connector, 无 pixel shuffle** (`config.json`, 2026-09-17 访问) | 作为 N1.5 的事实陈述 | 与 N1 论文的描述不同, 两代不能混用 |
 | 4 | EgoScale 全篇没说自己用 N1 还是 N1.5 级别的 backbone | 结构做成可配置, `paper()` 全为 `None` | 论文 §2.3 说 "similar to GR00T N1", 附录 D.1 说适配器 "following GR00T-N1 and N1.5" —— 两处指向不同代, 见 §8 |
+| 5 | 上游的 VL self-attention (`SelfAttentionTransformer.forward`, `cross_attention_dit.py` L358-L375) **不接受任何 mask**, 调用点 (`flow_matching_action_head.py` L263-L269) 也没传 | 照做, 并写测试把这个行为钉死 | 后果是: left padding 与填黑相机的 token 会经由这几层自注意力**泄漏**到有效 token 上, 屏蔽只在下游 DiT 的 cross-attention 里靠 `encoder_attention_mask` 生效. 这不是笔误也不是本仓库的 bug, 是上游的实际数据通路; 见 `test_parity.py::test_vl_self_attention_is_unmasked_upstream_so_isolation_leaks` |
 
 ## 2. 复现范围
 
@@ -130,7 +131,7 @@ backbone_features = self.vl_self_attention(backbone_features)
 
 `test_parity.py` (CPU, 约 10 秒) 检查什么:
 - **shape / 参数量**: `pixel_shuffle` 的 `(N,w,h,c) → (N,w/2,h/2,4c)`; 每帧 token 数在开/关 shuffle 下分别是 `(H/p)²` 与 `(H/p)²/4`; 三种 connector 的参数量与手算值一致; `select_layer = k` 时 LLM 只剩 k 层且参数量正好少 `(n_total − k)` 层;
-- **解析性质**: `pixel_shuffle` 是**可逆重排** (元素多重集不变, 且存在精确逆); connector 为 1 层时是纯线性; `use_vlln=False` 时 `vlln` 与 VL self-attention 同时退化成恒等; 被 `view_mask` 屏蔽的相机改变像素不改变输出; 文本是 left padding 时前缀 pad 不影响有效 token 的输出;
+- **解析性质**: `pixel_shuffle` 是**重排**而非插值 (元素多重集不变), 且复现上游注释里 `[B,1024,1024] -> [B,256,4096]` 的例子; `use_vlln=False` 时 `vlln` 与 VL self-attention 同时退化成恒等; 在 **LLM 输出处**, 被 `view_mask` 屏蔽的相机与 left padding 的文本都不影响有效 token; 在 **VL 后处理之后**泄漏确实发生, 且关掉 `use_vlln` 后消失 —— 这条测试把上游 "自注意力不带 mask" 的行为钉死;
 - **分布检查**: 随机输入下各层输出的 std 落在 `[0.1, 10]` (LayerNorm 生效, 没有数值爆炸).
 
 ```
@@ -176,6 +177,7 @@ uv run python gear/egoscale/backbone/figs/make_figs.py
 | 三路相机怎么进同一个序列 | 上游把 `(t v) c h w` 展平后一并交给 processor (`transforms.py` L172-L177), 即三路的 token 顺序拼接; EgoScale 未说是否一样 |
 | `view_mask` 如何进 attention | 上游没有 per-view mask 的概念 (缺视频键直接断言失败). 本仓库把填黑槽位的 token 在 `backbone_attention_mask` 里置 False, 这是本仓库的处理 |
 | backbone 单独的前向延时 | 未披露; 只有端到端的 63.9 ms (L40, GR00T N1) |
+| VL self-attention 不做屏蔽 | 见 §1.x 第 5 条. 屏蔽只在 DiT 的 cross-attention 里生效, 所以有效 token 的表征确实被 padding 影响了. 上游没有讨论这一点, EgoScale 也没有 |
 | `vlln` / VL self-attention 的初始化 | 上游代码里是随机初始化后随 checkpoint 一起训的, 具体初始化方案未在论文中说明 |
 | N1.5 的 action head 类 | 上游 `flow_matching_action_head.py` L105 的注释写 "N1.5 uses XEmbFlowmatchingPolicyHeadConfig as action head", 但这个类不在该文件里. 本仓库按文件内的 `FlowmatchingActionHead` 复现, 见 [`../dit`](../dit/README.md) |
 
