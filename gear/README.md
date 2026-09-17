@@ -29,7 +29,7 @@
 | [`egoscale/backbone`](egoscale/backbone/README.md) | Eagle-2.5 视觉语言 backbone 的最小实现与中间层特征抽取, VL LayerNorm 与 VL self-attention; checkpoint 视为给定 | 完成 |
 | [`egoscale/dit`](egoscale/dit/README.md) | DiT action expert: cross-attention / self-attention 交替块, AdaLN 时间步条件, 本体专属 state encoder / action encoder / action decoder, `[state, future_tokens, action]` token 布局; flow matching 目标与 K 步 Euler 采样 (与 `pi/pi0/flow_matching` 的差异表) | 完成 |
 | [`egoscale/train`](egoscale/train/README.md) | 三阶段 curriculum (预训练 / 对齐 mid-training / post-training) 的 batch size、学习率与逐阶段冻结表; scaling law 拟合与外推; cost 表 | 完成 |
-| [`egoscale/infer`](egoscale/infer/README.md) | 端到端推理链路装配, 参数量表, 延时表; `eval.py`: 五个灵巧任务的 additive / progress-based rubric, one-shot 两任务, G1 跨本体两任务, 人类验证损失协议 | 未开始 |
+| [`egoscale/infer`](egoscale/infer/README.md) | 端到端推理链路装配, 参数量表, 延时表; `eval.py`: 五个灵巧任务的 additive / progress-based rubric, one-shot 两任务, G1 跨本体两任务, 人类验证损失协议 | 完成 |
 
 **推理**
 - 观测 `o_t = (I_t, l_t)` 经 Eagle-2.5 编码为视觉语言嵌入 `φ_t`, 取中间层而非最后一层 (→ `backbone`).
