@@ -13,7 +13,7 @@ dependencies = [
 dev = ["pytest>=8"]
 
 [tool.pytest.ini_options]
-testpaths = ["pi"]
+testpaths = ["pi", "gear"]
 python_files = ["test_*.py"]
 pythonpath = ["."]
 
