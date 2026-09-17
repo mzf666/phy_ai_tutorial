@@ -6,7 +6,7 @@
 
 ![pipeline](figs/pipeline.png)
 
-**第二幅图的论点**: `figs/select_layer.png` 要让读者看出"取第 12 层"这个选择的两个后果 —— (a) 第 12 层之后的所有层都被**物理删除**了 (上游 `eagle_backbone.py` L59-L60 直接 `pop` 掉), 所以省下的不只是这一次前向, 而是参数量与显存; (b) 不同层的表征在下游线性可分性上不是单调的, 最后一层已经为"预测下一个词"而特化, 对控制反而更差 —— 这是论文报告"中间层更好"的机制解释.
+**第二幅图的论点**: `figs/select_layer.png` 要让读者看出两件事. (a) 取第 12 层不是“前向时少跑几层”而是**结构选择**: 上游 `eagle_backbone.py` L59-L60 在构造时就把上层 `pop` 掉, 所以省的是参数量与显存 —— 图里用本仓库 tiny 配置的真实参数量与实测前向时间画出这条曲线. (b) DiT 要 cross-attend 的序列长度完全由“每帧几个图像 token × 几路相机”决定, 填黑的槽位照样占 token. 论文报告的“中间层同时更快且下游更好”本仓库**无法复现** (需要真实 checkpoint), 所以它以引用的形式出现在 (c) 栏里, 不画成曲线; (c) 栏同时把每个数字的出处标清楚, 并且明确哪些**不是** EgoScale 的披露值.
 
 本 module 只复现**结构与数据通路**: patch 化、pixel shuffle、connector、中间层抽取、VL 后处理. **checkpoint 视为给定**, 预训练 recipe 只做事实陈述. `φ_t` 怎么被 DiT 消费在 [`../dit`](../dit/README.md); 各阶段冻结哪些部分在 [`../train`](../train/README.md).
 
