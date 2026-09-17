@@ -9,6 +9,7 @@
 目前 cover 以下内容:
 
 - Physical Intelligence series: [pi/README.md](pi/README.md)
+- NVIDIA GEAR series: [gear/README.md](gear/README.md)
 - Coming soon.
 
 本 README 同时是 AI 辅助开发的协议: 后文每一条 "必须 / 禁止" 都是验收标准, 不是建议.
