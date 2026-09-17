@@ -41,6 +41,8 @@
 | `"scale"` | `x / max(|min|,|max|)` | 无逆 (上游 `inverse` 不支持) | `[−1, 1]` | L175-L183 |
 | `"binary"` | `x > 0.5` | `x > 0.5` | `{0, 1}` | L185-L187 |
 
+**`q99` 是有损的**: 它在 forward 的最后 `clamp(-1, 1)` (L136), 所以落在 `[q01, q99]` 之外的尾部 1% 值**不可还原** —— 这是它的目的 (压掉离群值), 不是瑕疵. `min_max` 与 `mean_std` 没有这一步, 严格可逆. 换归一化模式会改变数据语义, 见 `test_parity.py::test_q99_is_lossy_outside_the_quantile_band`.
+
 **退化维的处理必须照抄, 它改变数学**: `min == max` 时 `min_max` 把该维**置 0** (L170-L173, 上游把"保留原值"那行注释掉了), 而 `q99` 与 `mean_std` 在退化时**保留原值** (L133-L135 / L149-L151). 三种模式在这一点上不一致, 不是笔误, 见 `test_parity.py::test_degenerate_dims`.
 
 ### 1.3 padding 与 mask: `prepare_state` / `prepare_action`
@@ -160,7 +162,7 @@
 
 `test_parity.py` (CPU, 约 5 秒) 检查什么:
 - **shape / 维度**: 四个本体的 `build_sample` 输出全部 shape; `video` 是 `(T,V,H,W,3)`; 超宽 state 被截断而超宽 action 断言失败;
-- **解析性质**: 三种可逆模式的 `inverse(forward(x)) == x`; padding 往返恒等; `min_max` 在 `min==max` 时置 0 而 `q99` / `mean_std` 保留原值; 人类样本的 `state_mask` 全 False 且 `state` 全 0; 缺相机槽位被填黑且 `view_mask` 为 False; `training=False` 时没有 `action` 键;
+- **解析性质**: `min_max` / `mean_std` 的 `inverse(forward(x)) == x` 严格成立, `q99` 只在 `[q01, q99]` 带内成立 (带外被 clamp 压掉); `scale` 没有逆变换 (上游同样没有); padding 往返恒等; `min_max` 在 `min==max` 时置 0 而 `q99` / `mean_std` 保留原值; 人类样本的 `state_mask` 全 False 且 `state` 全 0; 缺相机槽位被填黑且 `view_mask` 为 False; `training=False` 时没有 `action` 键;
 - **分布检查**: 按权重采样 20,000 次后各来源的经验频率与权重一致 (±2%); `min_max` 归一化后的值全部落在 `[−1, 1]`.
 
 ```
