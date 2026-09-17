@@ -78,7 +78,7 @@ min_q  w_pos · Σ_k ‖ FK_k(q) − s · p_k^human ‖²          # 关键点�
 s.t.  limits[:, 0] ≤ q ≤ limits[:, 1]                    # 唯一的约束
 ```
 
-`s` 是手掌尺度比 (机器人手中指 TIP 到腕部的距离 / 人手同一距离), 用来消除人手与机器人手的尺寸差. 三项权重都在 `RetargetWeights` 里, `paper()` 配置下全是 `None` (未披露), `tiny()` 下有能跑通的值并标注为非论文值.
+`s` 是手掌尺度比 (机器人中指链总骨长 / 人手中指链总骨长), 用来消除人手与机器人手的尺寸差; 用骨长而非指尖到腕部的直线距离, 因为骨长与姿态无关. 三项权重都在 `RetargetWeights` 里, `paper()` 配置下全是 `None` (未披露), `tiny()` 下有能跑通的值并标注为非论文值.
 
 ### 1.3 三种动作空间: `action.py` (论文 §3.6)
 
@@ -185,7 +185,7 @@ uv run python gear/egoscale/action/figs/make_figs.py
 | 训练数据规模 | Stage I 共 20,854 小时第一视角视频, 30 FPS; 其中 EgoDex 829 小时 (194 个桌面任务); in-the-wild 部分覆盖 9,869 场景 / 6,015 任务 / 43,237 物体 | 论文 §2.2 |
 | | 按 20,854 h × 3600 s × 30 FPS × 2 只手 ≈ **4.5 × 10⁹ 次单帧 NLP 求解** (本仓库据披露的时长与帧率推算, 非论文数字) | 推算 |
 | token 数 | 不适用 (本 module 不产生 token) | — |
-| 模型大小 | `ToyHand22` 与所有位姿变换都**无参数**; `FingertipToJointMLP` 在 tiny 配置下 5,142 参数 (结构未披露) | 本仓库 / 未披露 → §8 |
+| 模型大小 | `ToyHand22` 与所有位姿变换都**无参数**; `FingertipToJointMLP` 在 tiny 配置下 4,374 参数 (结构未披露) | 本仓库 / 未披露 → §8 |
 | 推理延时 | 重定向不在推理链路上; tiny 配置单帧 IPOPT 约 10-30 ms (Apple M 系列 CPU, 单核) | 本仓库实测 |
 
 ## 7. reference 映射表
@@ -210,9 +210,9 @@ uv run python gear/egoscale/action/figs/make_figs.py
 | 未披露 / 未复现 | 说明 |
 |---|---|
 | 旋转表示 (`rot_rep`) | EgoScale 全篇未说 `ΔW` 的旋转用什么编码. 代码要求显式传入, 无默认值. 上游 GR00T 的 `RotationTransform` 默认 `axis_angle → rotation_6d` (`state_action.py` L34), 但那是 GR00T 的默认, 不是 EgoScale 的值. tiny 与图里用 `rotation_6d` 仅为跑通 |
-| 重定向目标函数的项与权重 (`RetargetWeights`) | 论文只写 "a weighted combination of different objectives", 未列项也未给权重. `paper()` 里三项权重全为 `None`; `tiny()` 用 `w_pos=1.0, w_smooth=0.05, w_reg=0.01`, 仅为跑通, 非论文值 |
+| 重定向目标函数的项与权重 (`RetargetWeights`) | 论文只写 "a weighted combination of different objectives", 未列项也未给权重. `paper()` 里三项权重全为 `None`; `tiny()` 用 `w_pos=1.0, w_smooth=1e-4, w_reg=1e-5`, 仅为跑通, 非论文值 |
 | 指数滤波系数 `α` | 附录 D 只说 "first-order exponential filter". `paper()` 为 `None`; `tiny()` 用 `0.6`, 仅为跑通, 非论文值 |
-| 手掌尺度比 `s` 的定义 | 附录 D 只提 "kinematic consistency". 本仓库按"中指 TIP 到腕部距离之比"实现, 这是本仓库的定义, 不是论文的 |
+| 手掌尺度比 `s` 的定义 | 附录 D 只提 "kinematic consistency". 本仓库按"中指链总骨长之比"实现 (骨长与姿态无关, 指尖到腕部的直线距离会随握拳/张开变化), 这是本仓库的定义, 不是论文的 |
 | 真实 Sharpa Wave 手的 URDF | 论文引 [29] 的是产品页 https://www.sharpa.com/pages/wave (2026-09-17 访问), 无公开 URDF. `ToyHand22` 的连杆长度与关节限位全是本仓库自造的玩具值, 仅保证 22 自由度、20 个关键点、限位约束这三条结构事实与附录 D 一致 |
 | 每指关节数的划分 | 附录 D 只说总共 22 自由度. 本仓库按 5/4/4/4/5 划分, 这是本仓库的选择 |
 | IPOPT 的求解器选项 (容差、最大迭代、线性求解器) | 论文未披露. `tiny()` 用 `max_iter=200, tol=1e-8`, 仅为跑通 |
