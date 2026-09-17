@@ -352,13 +352,13 @@ def human_keypoints_in_wrist_frame(
 
 
 def _middle_finger_length(kp: np.ndarray) -> float:
-    """中指链的总骨长: 腕部->MCP->PIP->DIP->TIP 四段之和.
+    """中指的总骨长: MCP->PIP->DIP->TIP 三段之和.
 
-    用骨长而不是"指尖到腕部的直线距离", 因为前者与手的姿态无关: 同一只手握拳和张开时
-    骨长相同, 直线距离不同. 尺度比必须是几何量, 不能随帧变化.
+    用骨长而不是"指尖到腕部的直线距离", 因为前者与手的姿态严格无关: 相邻关键点之间
+    是刚性连杆, 距离恒等于连杆长度; 而腕部到 MCP 的距离会随掌指关节转动而变, 所以
+    这一段不算进去. 尺度比必须是几何量, 不能随帧变化.
     """
-    chain = np.concatenate([np.zeros((*kp.shape[:-2], 1, 3)), kp[..., 8:12, :]], axis=-2)
-    return float(np.linalg.norm(np.diff(chain, axis=-2), axis=-1).sum(-1).mean())
+    return float(np.linalg.norm(np.diff(kp[..., 8:12, :], axis=-2), axis=-1).sum(-1).mean())
 
 
 def palm_scale(kp_human: np.ndarray, hand: ToyHand22) -> float:

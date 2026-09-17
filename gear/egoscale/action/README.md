@@ -78,7 +78,7 @@ min_q  w_pos · Σ_k ‖ FK_k(q) − s · p_k^human ‖²          # 关键点�
 s.t.  limits[:, 0] ≤ q ≤ limits[:, 1]                    # 唯一的约束
 ```
 
-`s` 是手掌尺度比 (机器人中指链总骨长 / 人手中指链总骨长), 用来消除人手与机器人手的尺寸差; 用骨长而非指尖到腕部的直线距离, 因为骨长与姿态无关. 三项权重都在 `RetargetWeights` 里, `paper()` 配置下全是 `None` (未披露), `tiny()` 下有能跑通的值并标注为非论文值.
+`s` 是手掌尺度比 (机器人中指 MCP→PIP→DIP→TIP 三段骨长之和 / 人手同一量), 用来消除人手与机器人手的尺寸差. 用相邻关键点之间的骨长而不是指尖到腕部的直线距离: 前者恒等于刚性连杆长度, 与姿态无关; 后者会随掌指关节转动而变. 三项权重都在 `RetargetWeights` 里, `paper()` 配置下全是 `None` (未披露), `tiny()` 下有能跑通的值并标注为非论文值.
 
 ### 1.3 三种动作空间: `action.py` (论文 §3.6)
 
@@ -212,7 +212,7 @@ uv run python gear/egoscale/action/figs/make_figs.py
 | 旋转表示 (`rot_rep`) | EgoScale 全篇未说 `ΔW` 的旋转用什么编码. 代码要求显式传入, 无默认值. 上游 GR00T 的 `RotationTransform` 默认 `axis_angle → rotation_6d` (`state_action.py` L34), 但那是 GR00T 的默认, 不是 EgoScale 的值. tiny 与图里用 `rotation_6d` 仅为跑通 |
 | 重定向目标函数的项与权重 (`RetargetWeights`) | 论文只写 "a weighted combination of different objectives", 未列项也未给权重. `paper()` 里三项权重全为 `None`; `tiny()` 用 `w_pos=1.0, w_smooth=1e-4, w_reg=1e-5`, 仅为跑通, 非论文值 |
 | 指数滤波系数 `α` | 附录 D 只说 "first-order exponential filter". `paper()` 为 `None`; `tiny()` 用 `0.6`, 仅为跑通, 非论文值 |
-| 手掌尺度比 `s` 的定义 | 附录 D 只提 "kinematic consistency". 本仓库按"中指链总骨长之比"实现 (骨长与姿态无关, 指尖到腕部的直线距离会随握拳/张开变化), 这是本仓库的定义, 不是论文的 |
+| 手掌尺度比 `s` 的定义 | 附录 D 只提 "kinematic consistency". 本仓库按"中指 MCP→PIP→DIP→TIP 三段骨长之和的比值"实现 (骨长恒等于刚性连杆长度, 与姿态无关), 这是本仓库的定义, 不是论文的 |
 | 真实 Sharpa Wave 手的 URDF | 论文引 [29] 的是产品页 https://www.sharpa.com/pages/wave (2026-09-17 访问), 无公开 URDF. `ToyHand22` 的连杆长度与关节限位全是本仓库自造的玩具值, 仅保证 22 自由度、20 个关键点、限位约束这三条结构事实与附录 D 一致 |
 | 每指关节数的划分 | 附录 D 只说总共 22 自由度. 本仓库按 5/4/4/4/5 划分, 这是本仓库的选择 |
 | IPOPT 的求解器选项 (容差、最大迭代、线性求解器) | 论文未披露. `tiny()` 用 `max_iter=200, tol=1e-8`, 仅为跑通 |
