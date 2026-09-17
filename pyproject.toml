@@ -7,13 +7,14 @@ dependencies = [
     "torch>=2.4",
     "numpy>=1.26",
     "matplotlib>=3.8",
+    "casadi>=3.6",
 ]
 
 [dependency-groups]
 dev = ["pytest>=8"]
 
 [tool.pytest.ini_options]
-testpaths = ["pi"]
+testpaths = ["pi", "gear"]
 python_files = ["test_*.py"]
 pythonpath = ["."]
 
