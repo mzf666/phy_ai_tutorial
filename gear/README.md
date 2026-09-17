@@ -27,7 +27,7 @@
 | [`egoscale/action`](egoscale/action/README.md) | 人类动作表示: 相机位姿 × 21 手部关键点 → 世界系腕部位姿; chunk 内相对腕部 SE(3) 运动; URDF 正运动学 + 22 关节非线性规划的手部重定向 (关节限位、warm start、一阶指数滤波); 三种动作空间 (wrist-only / fingertip / full retargeted joints) 的并排实现与消融 | 完成 |
 | [`egoscale/data`](egoscale/data/README.md) | 统一 human / robot 样本: 头部 + 双腕三相机槽位; 人类数据无本体感受时的可学习占位 token; 多本体 state / action padding 与 `embodiment_id`, `action_mask`; 归一化统计量; Stage I / Stage II 数据混合 | 完成 |
 | [`egoscale/backbone`](egoscale/backbone/README.md) | Eagle-2.5 视觉语言 backbone 的最小实现与中间层特征抽取, VL LayerNorm 与 VL self-attention; checkpoint 视为给定 | 完成 |
-| [`egoscale/dit`](egoscale/dit/README.md) | DiT action expert: cross-attention / self-attention 交替块, AdaLN 时间步条件, 本体专属 state encoder / action encoder / action decoder, `[state, future_tokens, action]` token 布局; flow matching 目标与 K 步 Euler 采样 (与 `pi/pi0/flow_matching` 的差异表) | 未开始 |
+| [`egoscale/dit`](egoscale/dit/README.md) | DiT action expert: cross-attention / self-attention 交替块, AdaLN 时间步条件, 本体专属 state encoder / action encoder / action decoder, `[state, future_tokens, action]` token 布局; flow matching 目标与 K 步 Euler 采样 (与 `pi/pi0/flow_matching` 的差异表) | 完成 |
 | [`egoscale/train`](egoscale/train/README.md) | 三阶段 curriculum (预训练 / 对齐 mid-training / post-training) 的 batch size、学习率与逐阶段冻结表; scaling law 拟合与外推; cost 表 | 未开始 |
 | [`egoscale/infer`](egoscale/infer/README.md) | 端到端推理链路装配, 参数量表, 延时表; `eval.py`: 五个灵巧任务的 additive / progress-based rubric, one-shot 两任务, G1 跨本体两任务, 人类验证损失协议 | 未开始 |
 
