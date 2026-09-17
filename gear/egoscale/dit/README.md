@@ -104,6 +104,7 @@ tau = (noise_s - u) / noise_s,   noise_s = 0.999
 | 3 | AdaLN 里 `chunk` 的顺序是 `scale, shift` (L64); 输出头里是 `shift, scale` (L300) | 两处都照抄 | 这不是笔误而是两段独立代码; 换顺序会改变数学 |
 | 4 | 论文 §2.3 说人类样本"用可学习占位 token 替换 `q_t`", 但没说这个 token 是在 `state_encoder` **之前**(替换输入向量) 还是**之后**(替换输出的 token) | 在 `state_encoder` **之后**替换整个 token | 之前替换的话, 占位向量还要过一个本体专属 MLP, 而人类样本本来就没有对应本体; 之后替换语义更干净. 两种都留了开关, 见 §8 |
 | 5 | `num_target_vision_tokens = 32` 的 `future_tokens` 在本文件里不接任何监督 | 照抄, 只作为可学习的额外 token | 上游注释 `return_all_hidden_states=False, # NOTE (YL): not using flare now` (L337) 说明这些 token 是给 FLARE 的未来潜在表征对齐目标用的, 该目标在本文件里没启用. EgoScale 没提 FLARE |
+| 6 | `tau = (s - u) / s` 里 `s = 0.999 < 1`, 而 `u ~ Beta(1.5, 1)` 的支撑是 `[0, 1]` | 照抄; 测试把这个边界钉死 | 于是约 `1 - 0.999^1.5 = 0.15%` 的样本会拿到 **`tau < 0`** (下界 `(s-1)/s = -0.001`), 离散化后的桶是 **`-1`**. 上游的时间步编码是正弦函数而不是查表, 所以不会崩; 但它意味着极小一部分训练样本落在路径 `tau < 0` 的一侧, 比纯噪声还远一点. 上游与论文都没有提到这一点, 见 `test_parity.py::test_tau_can_be_slightly_negative` |
 
 ## 2. 复现范围
 
@@ -175,7 +176,7 @@ curriculum 与冻结见 [`../train`](../train/README.md).
 `test_parity.py` (CPU, 约 20 秒) 检查什么:
 - **shape / 参数量**: token 布局是 `Ts + 32 + H`; DiT 输出取最后 `H` 个; `CategorySpecificLinear` 的参数量正好是 `C·(in·out + out)`; 16 层里 8 层带 cross-attention、8 层不带;
 - **解析性质**: `τ = 0` 时 `A_τ` 恰是噪声、`τ = 1` 时恰是动作; 用 oracle 速度场 `A − ε` 做 `K` 步 Euler 能精确还原 `A`(线性路径, 步数无关); `action_mask` 全 True 时 loss 等于普通 MSE, 部分 True 时等于只在真实维上的 MSE; 改变一个本体的适配器权重不影响另一个本体的输出 (本体隔离); `has_proprio=False` 时改变 `state` 的数值不改变输出 (占位 token 生效); `apply_phi_mask=False`(上游默认) 时改变 padding 位置的 `φ` **会**改变输出, 打开开关后不再改变;
-- **分布检查**: `sample_time` 的经验分布与 `torch.distributions.Beta(1.5,1)` 经同一变换后的分位数一致 (±0.02), 且均值明显小于 0.5 (偏向高噪声端); 离散化后的桶落在 `[0, 1000)`.
+- **分布检查**: `sample_time` 的经验分位数与 `Beta(1.5,1)` 经同一变换后的**解析分位数**一致 (±0.02), 均值明显小于 0.5 (偏向高噪声端); 离散化后的桶落在 `[-1, 1000)` —— 下界是 `-1` 而不是 `0`, 原因见 §1.x 第 6 条.
 
 ```
 uv run pytest gear/egoscale/dit -q
