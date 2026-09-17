@@ -68,7 +68,7 @@ def stage3(mid_trained: bool) -> Stage:
         name=f"III_post_train({'mid' if mid_trained else 'no_mid'})",
         steps=10_000, batch_size=512, lr=3e-5,
         tune_llm=False, tune_visual=not mid_trained, tune_dit=True, tune_projector=True,
-        data="task demonstrations (100 per task; Shirt 20; Bottle 4x25)",
+        data="task demos, 100/task (Shirt 20, Bottle 4x25)",
     )
 
 
