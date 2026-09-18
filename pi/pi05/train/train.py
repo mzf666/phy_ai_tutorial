@@ -97,9 +97,41 @@ def hirobot_hl_config() -> TrainConfig:
 #    expert. make_attn_mask's cumsum rule cannot skip a block, so the mask is built explicitly.
 # ======================================================================================
 def make_joint_mask(prefix_valid: torch.Tensor, post_valid: torch.Tensor, n_expert: int) -> torch.Tensor:
-    """prefix_valid, post_valid: bool[B, S] over the SAME token axis ([images | tokens]), marking which columns are valid
+    r"""prefix_valid, post_valid: bool[B, S] over the SAME token axis ([images | tokens]), marking which columns are valid
     prefix tokens and which are valid FAST / text postfix tokens; n_expert = E expert tokens appended after them.
-    -> bool[B, S + E, S + E], True where the row (query) may attend the column (key)."""
+    -> bool[B, S + E, S + E], True where the row (query) may attend the column (key).
+
+    One sample with 2 image tokens, 3 prefix text tokens, 2 FAST tokens, 1 pad, and E = 3 expert tokens:
+
+        prefix_valid = [1 1 1 1 1 0 0 0]        post_valid = [0 0 0 0 0 1 1 0]
+
+                               <------- S = 8 -------->  <-- E = 3 -->
+                               I0 I1 T0 T1 T2 F0 F1  .   E0 E1 E2
+                              +------------------------+-------------+
+                 /    I0      | x  x  x  x  x  .  .  . | .  .  .     |
+                 |    I1      | x  x  x  x  x  .  .  . | .  .  .     |
+          prefix |    T0      | x  x  x  x  x  .  .  . | .  .  .     |  <- prefix never
+                 |    T1      | x  x  x  x  x  .  .  . | .  .  .     |     sees the expert
+                 \    T2      | x  x  x  x  x  .  .  . | .  .  .     |
+                              |     (1) bidirectional  |             |
+          FAST   /    F0      | x  x  x  x  x  x  .  . | .  .  .     |
+                 \    F1      | x  x  x  x  x  x  x  . | .  .  .     |
+                              | (2) prefix (3) causal  |             |
+          pad          .      | .  .  .  .  .  .  .  . | .  .  .     |
+                              +------------------------+-------------+
+                 /    E0      | x  x  x  x  x  .  .  . | x  x  x     |
+          expert |    E1      | x  x  x  x  x  .  .  . | x  x  x     |
+                 \    E2      | x  x  x  x  x  .  .  . | x  x  x     |
+                              | (4) prefix  (5) blind  | (6) full    |
+                              +------------------------+-------------+
+
+    (5) and the empty top-right block are the point of this mask: the flow branch must not read the FAST tokens
+    (they are the discrete answer to the same chunk), and the text / FAST cross entropy must not depend on whether
+    an expert block is present, so that alpha = 0 pre-training and alpha = 10 post-training compute the same CE.
+    Padding columns need no special case: both `valid` vectors are 0 there, so every block leaves them False.
+    Matching this, the expert's position ids skip the FAST tokens as well (see `joint_forward`): at inference no
+    FAST tokens exist, so the expert must not count them here either.
+    """
     b, s = prefix_valid.shape
     dev = prefix_valid.device
     idx = torch.arange(s, device=dev)
