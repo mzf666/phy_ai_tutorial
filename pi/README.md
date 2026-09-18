@@ -15,6 +15,10 @@
   - 上游代码: [openpi](https://github.com/Physical-Intelligence/openpi) @ `215abfb217dbac7d5f1273282331b9b1866c0479` (`pi0_config.py` 的 `pi05` 开关, `pi0.py` 的 adaRMSNorm 路径, `gemma.py` `RMSNorm(x, cond)`, `tokenizer.py` L22-L29 的离散 state prompt, `config.py` 的 `pi05_*` 训练配置). 上游只开源了 post-training 之后的 flow-matching 推理与微调; 联合目标 (FAST token + flow), 两阶段 curriculum, 高层 subtask 推理只有论文, 本仓库按论文写并进 ledger
   - 同系列: Hi Robot: Open-Ended Instruction Following with Hierarchical VLA Models: https://arxiv.org/abs/2502.19417v2 (两级推理的来源: 高层 VLM 出 subtask 文本, 低层 π0 出动作; 合成用户指令数据; 高层训练超参). 无开源代码
   - 目录 `pi05/`, 分支 `topic/pi05`
+- π0.6* (RECAP): a VLA That Learns From Experience: https://arxiv.org/abs/2511.14759v2 (arXiv:2511.14759v2); 底座 π0.6 的模型卡: [PI06_model_card.pdf](https://website.pi-asset.com/pi06star/PI06_model_card.pdf) (2025-11-17, 2026-09-18 访问)
+  - 上游代码: **没有**. openpi @ `215abfb217dbac7d5f1273282331b9b1866c0479` (2026-08-24 HEAD) 不含 π0.6 / RECAP / Gemma 3 (issue #789, #791 仍开). 本 topic 全部按论文 + 模型卡写, 每处推断进 ledger
+  - 同系列: Knowledge Insulation: https://arxiv.org/abs/2505.23705v1 (arXiv:2505.23705v1, π0.6 的训练 recipe: 单阶段联合目标 + attention 内 stop-gradient + web 数据 co-training); Gemma 3 technical report: https://arxiv.org/abs/2503.19786v1 (arXiv:2503.19786v1, 新底座), 结构定义取 [google-deepmind/gemma](https://github.com/google-deepmind/gemma) @ `0513283af5afffa27390b6ede2facc35d0f16e08` (`gemma/gm/nn/_gemma.py` `Gemma3_4B` L221-L246, `Gemma3_1B` L169-L193; `_modules.py` `create_sliding_mask` L36-L52, QK-norm L160-L161 / L192-L194, sliding mask L258-L267, Block L400-L490; `vision/_vision.py` `VisionExit` L202-L231 avg-pool 到 256 token; `math/_positional_embeddings.py` `apply_rope` L23-L75 的 scale_factor)
+  - 目录 `pi06/`, 分支 `topic/pi06`
 
 
 ## 关键技术栈
@@ -121,3 +125,40 @@
 - Hi Robot 的合成数据生成 (用大 VLM 给 (观测, skill 标签) 反推用户 prompt 与机器人回复, 按场景 / 回复类型分类) (→ `data` README).
 - 消融与对比结论 (Fig. 8-13, 15-17): 环境数 scaling, ME / CE / WD / VI / HL 各自的贡献, π0-FAST+Flow 基线 (→ `train`, `hier` README).
 - 机器人平台: 两种移动操作臂, 4 相机, 2 × 6 DoF 臂 + 夹爪, 全向底盘, 1-2 DoF 升降 (→ `infer` README).
+
+### π0.6*: 用价值函数给每条数据打 advantage 标签, 让 VLA 从自己的部署经验里学 (RECAP)
+
+π0.6* = π0.6 底座 + RECAP. 相对 π0.5, 底座换成 SigLIP 400M + Gemma 3 4B 加一个同深度 (34 层) 的 860M action expert, 文本 token 之间改为因果 attention, 训练改用 Knowledge Insulation 的单阶段联合目标 (FAST CE + flow MSE 同时训, expert 的梯度不回传底座, α = 1) (模型卡 §2; KI Sec. 5). RECAP 在此之上加三件事 (论文 Sec. IV-V): (1) 一个分布式价值函数 V(o, ℓ) 预测 "到成功还差多少步" (201 bin 的 CE, 回报按任务最大长度归一到 (−1, 0)); (2) 用 V 算每条样本的 advantage, 按任务分位数阈值二值化成 `Advantage: positive / negative` 文本 token, 放在子任务 ℓ̂ 之后、动作之前, 训练时 30% 概率省略; (3) 部署 → 人工标成功 / 失败 + 可选纠正 → 重训 V → 重训策略 (每轮都从预训练 checkpoint 出发) 的循环. 本 topic 只写增量, 其余 `from pi.pi05 / pi.pi0 / pi.fast import ...`.
+
+| module | 关键技术 (增量) | 复用 π0.5 / π0 / FAST | 状态 |
+|---|---|---|---|
+| [`pi06/data`](pi06/data/README.md) | 序列: `Task: … State: …;\n` + `Subtask: ℓ̂\n` + `Advantage: positive/negative\n` + `Action: <FAST> \|` 的段落 id (图像 / 文本前缀 / 子任务 / advantage / FAST), 文本段因果; advantage token 的 30% dropout; metadata 段; 4 × 448×448 相机槽位; KI 三类样本 (仅 VLM / 仅动作 / 动作 + 子任务) 的 loss mask; Eq. 5 奖励 → 按任务归一的回报 → 201 bin 目标; episode 标签 (成功 / 纠正段) | `pi05/data` state 分箱前缀, HL 文本, quantile; `fast/data` FAST postfix; `pi0/data` resize / 增广 / delta / padding | 完成 |
+| [`pi06/backbone`](pi06/backbone/README.md) | Gemma 3 最小实现: GQA 8 q / 4 kv, QK-norm, 5 local : 1 global 交错 + sliding window 1024, RoPE 10k (local) / 1M × 1/8 缩放 (global), attn 与 FFN 的 post-norm, 262,144 词表; SigLIP 448 → 1024 patch → avg-pool 到 256 token → RMSNorm + 线性投影; 图像双向 / 文本因果的 prefix mask; 34 层 adaRMSNorm expert; `Pi06` 模型 (prefix cache, 5 步 flow, 子任务解码); 参数量 parity 对 Gemma 3 Table 1 | `pi0/vlm` SigLIP / attention 核 / GeGLU; `pi05/expert` adaRMSNorm / 投影; `pi05/hier` 解码循环 | 完成 |
+| [`pi06/value`](pi06/value/README.md) | 分布式价值函数: 小 Gemma 3 底座 (670M) + 201 类 head, 期望读出 V ∈ (−1, 0); `train.py`: Eq. 1 CE, advantage 估计 (预训练 N = T, post-training N = 50), 分位数阈值 ε_ℓ (30% / 40% / 10%), 指示 I_t 与纠正段强制 True, SFT 阶段固定 True, web 数据 co-training 的 loss mask | `pi06/backbone` Gemma 3 + prefix; `fast/train` CE | 完成 |
+| [`pi06/infer`](pi06/infer/README.md) | 端到端 `Pi06Policy.infer`: 子任务解码 (低频) → advantage token 进序列 → 5 步 Euler; CFG (Eq. 13) 条件 / 无条件双 prefix, β ∈ [1.5, 2.5]; 静态双臂 spec (2 × 6 关节 + 2 夹爪 = 14 维, 3 相机, 50 Hz); 延时表 (H100 63 ms / chunk); `eval.py`: throughput (成功 / 小时) 与人工标注成功率, 五个任务与时限, box 四阶段, 假环境跑通 | `pi05/infer` 逆变换 / `Env`; `pi0/flow_matching` Euler | 完成 |
+| [`pi06/train`](pi06/train/README.md) | KI 联合目标: attention 内对 expert 行 detach K_b / V_b (Eq. 5-6), α = 1, M^ℓ / M^act 三类样本; RECAP Algorithm 1 循环 (聚合 D_ℓ, 先 V 后 π, 始终从预训练 checkpoint 微调, SFT 阶段 I = True), 每任务 episode 数; cost 表; AWR / PPO (SPO 信任域, Eq. 11) 只陈述 | `pi05/train` `make_joint_mask` / `joint_forward` 的骨架; `pi0/train` 优化器 / EMA / clip | 完成 |
+
+**推理**
+- 序列: 前缀 `[BOS] Task: p, State: s;\n` (含 metadata s), 然后 `Subtask: ℓ̂\n`, `Advantage: positive\n`, `Action: `; 文本 token 因果, 图像双向, action token 双向; expert 看图像 + 全部文本 (含子任务与 advantage), 不看 FAST token (→ `data`, `backbone`).
+- Gemma 3 4B 的前向: 34 层, 每 6 层里 5 层 sliding-window 1024 (RoPE base 10k) + 1 层全局 (RoPE base 1M, 位置除以 8), GQA 8 / 4 头 × 256, q / k 各过 RMSNorm, attn 与 FFN 输出各过 post-norm (→ `backbone`).
+- 图像: 4 路 448×448 → SigLIP 400M (patch 14, 1024 patch) → 2×2 avg-pool → 256 token → RMSNorm + 线性到 2560 (Gemma 3 的做法; π0.6 是否沿用未披露 → ledger) (→ `backbone`).
+- 5 步 Euler (π0.5 是 10 步); CFG: v = v_uncond + β (v_cond − v_uncond), β ∈ [1.5, 2.5], 只作用 flow 分支; H100 上 3 相机 63 ms / chunk (→ `infer`).
+- 子任务预测频率低于动作生成 (具体节奏未披露 → ledger, 沿用 Hi Robot 的 1 s) (→ `infer`).
+- 价值函数推理: 同样的 prefix (无 advantage token) → 201 类 logits → 期望 (→ `value`).
+
+**训练**
+- Eq. 5 奖励 (0 / −C_fail / −1), 回报按任务最大 episode 长度归一到 (−1, 0), 201 bin (→ `data`); Eq. 1 CE 训练 V, 期望读出 (→ `value`).
+- advantage: 预训练 A = R_t − V(o_t) (N = T, 单次前向, 在线算), post-training N = 50 步 lookahead; ε_ℓ 使预训练 30% 的示范 / 微调 40% 的 rollout / T 恤任务 10% 为正 (10k 样本估计); 纠正段强制 I = True; SFT 阶段固定 True (→ `value`).
+- advantage token 30% dropout 代替 loss 权重 α (→ `data`); KI 联合目标 Eq. 4 (α = 1) 与 Eq. 5-6 的 stop-gradient (→ `train`).
+- RECAP Algorithm 1: 预训练 (全部示范, V 与 π), 每任务 SFT (I = True), 然后 K 轮 {采集, 从 V_pre 微调 V, 从 π_pre 微调 π}; episode 数: T 恤 300 × 4 台 / 轮 (无纠正), diverse 450 + 287 纠正, strict T 恤 ~1000 + 280 + 378 纠正 (3 台), box 600 + 360 纠正 / 轮 (3 台), cafe 429 纠正 + 414 自主 (1 轮) (→ `train`).
+- 优化器 / lr / batch / 步数 / 算力: 全部未披露 → ledger (→ `train`, `value`).
+
+**评测**
+- throughput = 成功次数 / 小时 (含速度与成功率), 成功率 = 人工多维打分聚合成的二值标签; 任务与时限: laundry (T 恤 / 短裤) 200 s, diverse laundry (11 类, 报告 button-up shirt) 500 s, strict T 恤 (领口朝上) 200 s, double espresso 200 s, box assembly 600 s (四阶段: 取板 / 折盒 / 贴标 / 入箱) (→ `infer/eval.py`).
+- 基线: π0.5, π0.6 (SFT), RL 预训练 π0.6*, offline RL + SFT, AWR, PPO (SPO 信任域 η = 0.01); 结论 (Fig. 7-12): throughput 翻倍以上, 失败率减半, strict T 恤 97% (→ `train` README, 只陈述).
+
+**背景事实 (只陈述, 不写代码)**
+- π0.6 的预训练数据: π0.5 的配方 + 更多机器人平台; 模型卡 Fig. 2-4 的 out-of-the-box 对比 (→ `backbone` README).
+- Gemma 3 的预训练 / 蒸馏 recipe, Pan & Scan (推理期裁剪, π0.6 未提), 128k 上下文 (→ `backbone` README).
+- 静态双臂平台: 2 × 6 DoF + 平行夹爪, 50 Hz 关节位置, 3 相机 (中间基座 + 双腕) (→ `infer` README).
+- PPO 变体 Eq. 10-11 与 AWR 的实现细节 (→ `train` README).
